@@ -1,5 +1,8 @@
 {
   "rewrites": [
-    { "source": "/feedback", "destination": "/index.html" }
+    { "source": "/feedback", "destination": "/index.html" },
+    { "source": "/b2b", "destination": "/index.html" },
+    { "source": "/wholesale", "destination": "/index.html" },
+    { "source": "/cafes", "destination": "/index.html" }
   ]
 }
