@@ -1,0 +1,28 @@
+{
+  "name": "nbl-finpay-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "No Bites Left — Finpay PG integration (order purchasing) backend",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "db:init": "node --env-file=.env.local --import tsx scripts/db-init.ts",
+    "test:phase1": "node --env-file=.env.local --import tsx scripts/test-phase1.ts",
+    "test:phase2": "node --env-file=.env.local --import tsx scripts/test-phase2.ts"
+  },
+  "dependencies": {
+    "next": "^15.5.20",
+    "pg": "8.13.1",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/pg": "8.11.10",
+    "@types/react": "19.1.0",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2"
+  }
+}
