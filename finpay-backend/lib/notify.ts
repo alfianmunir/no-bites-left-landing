@@ -49,6 +49,33 @@ async function send(to: string, subject: string, html: string, tag: string, meta
   }
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+}
+
+/** Like `send`, but returns whether it sent (for form endpoints that report back). */
+async function sendResult(to: string, subject: string, html: string, tag: string, meta: Record<string, unknown>): Promise<{ sent: boolean; reason?: string }> {
+  if (!resend) return { sent: false, reason: "RESEND_API_KEY unset" };
+  try {
+    const { error } = await resend.emails.send({
+      from: env.mailFrom,
+      to,
+      subject,
+      html,
+      ...(env.mailReplyTo ? { replyTo: env.mailReplyTo } : {}),
+    });
+    if (error) {
+      logOrder(`${tag}_error`, { ...meta, error: String(error) });
+      return { sent: false, reason: String(error) };
+    }
+    logOrder(tag, { ...meta, sent: true });
+    return { sent: true };
+  } catch (e) {
+    logOrder(`${tag}_error`, { ...meta, error: String(e) });
+    return { sent: false, reason: String(e) };
+  }
+}
+
 export async function notifyOpsPaid(order: Order): Promise<void> {
   const pickup = order.pickup_date ? formatPickupDate(order.pickup_date) : "—";
   const html = `
@@ -63,6 +90,36 @@ export async function notifyOpsPaid(order: Order): Promise<void> {
     amount: order.amount,
     to: env.opsNotifyEmail,
   });
+}
+
+export interface FeedbackInput { rating: number; name: string; flavour?: string; message?: string }
+export async function notifyFeedback(fb: FeedbackInput): Promise<{ sent: boolean; reason?: string }> {
+  if (!resend) return { sent: false, reason: "RESEND_API_KEY unset" };
+  const to = env.opsNotifyEmail;
+  if (!to) return { sent: false, reason: "OPS_NOTIFY_EMAIL unset" };
+  const html = `
+    <h2>New feedback ${"★".repeat(Math.max(0, Math.min(5, fb.rating)))}${"☆".repeat(5 - Math.max(0, Math.min(5, fb.rating)))}</h2>
+    <p><b>From:</b> ${escapeHtml(fb.name)}</p>
+    <p><b>Rating:</b> ${fb.rating} / 5</p>
+    ${fb.flavour ? `<p><b>Flavour:</b> ${escapeHtml(fb.flavour)}</p>` : ""}
+    ${fb.message ? `<p><b>Message:</b><br/>${escapeHtml(fb.message).replace(/\n/g, "<br/>")}</p>` : ""}
+  `;
+  return sendResult(to, `⭐ Feedback from ${fb.name} (${fb.rating}★)`, html, "feedback_notify", { name: fb.name, rating: fb.rating });
+}
+
+export interface WholesaleInput { name: string; role: string; cafe: string; city: string; contact: string; volume?: string }
+export async function notifyWholesale(w: WholesaleInput): Promise<{ sent: boolean; reason?: string }> {
+  if (!resend) return { sent: false, reason: "RESEND_API_KEY unset" };
+  const to = env.opsNotifyEmail;
+  if (!to) return { sent: false, reason: "OPS_NOTIFY_EMAIL unset" };
+  const html = `
+    <h2>New wholesale / tasting request 🧑‍🍳</h2>
+    <p><b>Cafe:</b> ${escapeHtml(w.cafe)}</p>
+    <p><b>Contact:</b> ${escapeHtml(w.name)} (${escapeHtml(w.role)}) · ${escapeHtml(w.contact)}</p>
+    <p><b>City / area:</b> ${escapeHtml(w.city)}</p>
+    <p><b>Expected weekly volume:</b> ${w.volume ? escapeHtml(w.volume) : "—"}</p>
+  `;
+  return sendResult(to, `🧑‍🍳 Wholesale tasting request — ${w.cafe}`, html, "wholesale_notify", { cafe: w.cafe, contact: w.contact });
 }
 
 export async function notifyCustomerReady(order: Order): Promise<void> {

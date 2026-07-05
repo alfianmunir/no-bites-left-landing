@@ -23,12 +23,23 @@ export default function LandingFeedback() {
   const label: React.CSSProperties = { display: "block", fontWeight: 800, fontSize: 13, letterSpacing: "0.03em", textTransform: "uppercase", color: "var(--soft)", marginBottom: 8 };
   const input: React.CSSProperties = { width: "100%", padding: "14px 16px", borderRadius: 12, border: "1.5px solid var(--line)", background: "var(--bg)", color: "var(--ink)", fontSize: 16, fontWeight: 600, marginBottom: 18, outline: "none" };
 
-  const send = () => {
+  const send = async () => {
     if (!name.trim() || rating < 1) { setError(t.fbNeed); return; }
     setError("");
     setSending(true);
-    // No feedback backend yet — simulate a send, then thank the customer.
-    setTimeout(() => { setSending(false); setSent(true); }, 700);
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating, name: name.trim(), flavour, message: msg }),
+      });
+      if (!res.ok) { setSending(false); setError(t.fbNeed); return; }
+      setSending(false);
+      setSent(true);
+    } catch {
+      setSending(false);
+      setError(t.fbNeed);
+    }
   };
   const reset = () => { setRating(0); setName(""); setFlavour(""); setMsg(""); setSent(false); };
 
