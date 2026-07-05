@@ -18,6 +18,8 @@ import LandingTreat from "./LandingTreat";
 import LandingOrder from "./LandingOrder";
 import LandingB2B from "./LandingB2B";
 import LandingFeedback from "./LandingFeedback";
+import LandingFooter from "./LandingFooter";
+import LandingThemePicker from "./LandingThemePicker";
 
 export default function LandingPage({ openOrder = false }: { openOrder?: boolean }) {
   const { themeVars, playful } = useLanding();
@@ -39,7 +41,8 @@ export default function LandingPage({ openOrder = false }: { openOrder?: boolean
       <LandingOrder />
       <LandingB2B />
       <LandingFeedback />
-      {/* Footer + first-visit theme picker arrive in the next phase. */}
+      <LandingFooter />
+      <LandingThemePicker />
     </div>
   );
 }
