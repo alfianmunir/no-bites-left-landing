@@ -44,17 +44,17 @@ export interface InitiateParams {
 }
 
 /**
- * Finpay Hosted Payment launch set (E2E PRD §3 / README §5). QRIS is the
- * default/primary method (PRD §4). `sourceOfFunds` preselects it on the hosted
- * page. PRD §12 Q5 (hard-lock vs default-with-switch) is still open — this
- * defaults to QRIS while leaving the others enabled; confirm against sandbox.
+ * Finpay Hosted Payment methods. Per current business decision, v1 launches
+ * with **Virtual Account only** — QRIS + e-wallets are intentionally hidden.
+ * `sourceOfFunds` preselects the default (BCA VA) on the hosted page.
+ *
+ * IMPORTANT: which methods actually APPEAR on Finpay's hosted page is controlled
+ * by the enablement on the **Finpay MID** (merchant dashboard), not just this
+ * request field. To truly hide QRIS/e-wallets, Finpay must enable only VA for
+ * the production MID — this code sets our preference to match.
  */
-export const DEFAULT_SOURCE_OF_FUNDS = "qris";
+export const DEFAULT_SOURCE_OF_FUNDS = "vabca";
 export const ENABLED_SOURCES_OF_FUNDS = [
-  "qris",
-  "dana",
-  "ovo",
-  "shopeepay",
   "vabca",
   "vabni",
   "vabri",
