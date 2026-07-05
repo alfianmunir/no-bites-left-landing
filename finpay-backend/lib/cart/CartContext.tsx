@@ -36,6 +36,7 @@ interface CartContextValue {
   clearCart: () => void;
   toasts: Toast[];
   dismissToast: (id: string) => void;
+  notify: (message: string) => void;
 }
 
 const STORAGE_KEY = "nbl_cart_v1";
@@ -132,6 +133,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     clearCart,
     toasts,
     dismissToast,
+    notify: (message: string) => pushToast(message),
   };
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;

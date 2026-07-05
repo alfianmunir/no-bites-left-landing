@@ -10,6 +10,8 @@ import { useLanding } from "@/lib/landing/LandingContext";
 import { useOrderFlow } from "@/lib/order-flow/OrderFlowContext";
 import LandingNav from "./LandingNav";
 import LandingHero from "./LandingHero";
+import LandingStory from "./LandingStory";
+import LandingMenu from "./LandingMenu";
 
 export default function LandingPage({ openOrder = false }: { openOrder?: boolean }) {
   const { themeVars, playful } = useLanding();
@@ -23,7 +25,9 @@ export default function LandingPage({ openOrder = false }: { openOrder?: boolean
     <div className="nbl-landing" data-playful={playful ? "true" : "false"} style={themeVars}>
       <LandingNav />
       <LandingHero />
-      {/* Menu, story, quiz, what's-inside, order, feedback, B2B, footer arrive in later phases. */}
+      <LandingStory />
+      <LandingMenu />
+      {/* Quiz, what's-inside, order, feedback, B2B, footer arrive in later phases. */}
     </div>
   );
 }
