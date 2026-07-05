@@ -59,3 +59,25 @@ CREATE TABLE IF NOT EXISTS addresses (
 );
 
 CREATE INDEX IF NOT EXISTS addresses_user_id_idx ON addresses (user_id);
+
+-- Marketing form submissions (durable record; also emailed to ops via Resend).
+CREATE TABLE IF NOT EXISTS feedback (
+  id         TEXT PRIMARY KEY,
+  rating     INTEGER NOT NULL,
+  name       TEXT NOT NULL,
+  flavour    TEXT,
+  message    TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS wholesale_requests (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  role       TEXT NOT NULL,
+  cafe       TEXT NOT NULL,
+  city       TEXT NOT NULL,
+  contact    TEXT NOT NULL,
+  volume     TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS feedback_created_at_idx           ON feedback (created_at);
+CREATE INDEX IF NOT EXISTS wholesale_requests_created_at_idx ON wholesale_requests (created_at);

@@ -1,6 +1,8 @@
-/** POST /api/wholesale — emails a B2B tasting request to ops (Resend). */
+/** POST /api/wholesale — persists a B2B tasting request (DB) + emails ops (Resend). */
 import { NextResponse } from "next/server";
 import { notifyWholesale } from "@/lib/notify";
+import { getLeadStore } from "@/lib/leadStore";
+import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +26,18 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!name || !role || !cafe || !city || !contact) {
     return NextResponse.json({ error: "name, role, cafe, city and contact are required" }, { status: 400 });
   }
-  const result = await notifyWholesale({ name, role, cafe, city, contact, volume: str(body.volume, 40) || undefined });
-  return NextResponse.json({ ok: true, emailed: result.sent });
+  const payload = { name, role, cafe, city, contact, volume: str(body.volume, 40) || undefined };
+
+  let saved = false;
+  try {
+    const store = getLeadStore();
+    await store.init();
+    await store.saveWholesale(payload);
+    saved = true;
+  } catch (e) {
+    logOrder("wholesale_save_error", { error: String(e) });
+  }
+
+  const result = await notifyWholesale(payload);
+  return NextResponse.json({ ok: true, saved, emailed: result.sent });
 }

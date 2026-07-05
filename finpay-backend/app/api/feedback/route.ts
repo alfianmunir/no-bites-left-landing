@@ -1,6 +1,8 @@
-/** POST /api/feedback — emails a customer's feedback to ops (Resend). */
+/** POST /api/feedback — persists a customer's feedback (DB) + emails ops (Resend). */
 import { NextResponse } from "next/server";
 import { notifyFeedback } from "@/lib/notify";
+import { getLeadStore } from "@/lib/leadStore";
+import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,13 +19,24 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!name || !Number.isInteger(rating) || rating < 1 || rating > 5) {
     return NextResponse.json({ error: "name and a 1-5 rating are required" }, { status: 400 });
   }
-  const result = await notifyFeedback({
+  const payload = {
     rating,
     name: name.slice(0, 80),
     flavour: typeof body.flavour === "string" ? body.flavour.slice(0, 60) : undefined,
     message: typeof body.message === "string" ? body.message.slice(0, 2000) : undefined,
-  });
-  // Don't fail the UX if email delivery is unconfigured — the submission is
-  // still acknowledged; the reason is logged server-side.
-  return NextResponse.json({ ok: true, emailed: result.sent });
+  };
+
+  // Persist the durable record first (best-effort — don't fail UX on a store hiccup).
+  let saved = false;
+  try {
+    const store = getLeadStore();
+    await store.init();
+    await store.saveFeedback(payload);
+    saved = true;
+  } catch (e) {
+    logOrder("feedback_save_error", { error: String(e) });
+  }
+
+  const result = await notifyFeedback(payload);
+  return NextResponse.json({ ok: true, saved, emailed: result.sent });
 }
