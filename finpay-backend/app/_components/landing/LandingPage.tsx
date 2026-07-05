@@ -12,6 +12,7 @@ import LandingNav from "./LandingNav";
 import LandingHero from "./LandingHero";
 import LandingStory from "./LandingStory";
 import LandingMenu from "./LandingMenu";
+import LandingQuiz from "./LandingQuiz";
 
 export default function LandingPage({ openOrder = false }: { openOrder?: boolean }) {
   const { themeVars, playful } = useLanding();
@@ -27,7 +28,8 @@ export default function LandingPage({ openOrder = false }: { openOrder?: boolean
       <LandingHero />
       <LandingStory />
       <LandingMenu />
-      {/* Quiz, what's-inside, order, feedback, B2B, footer arrive in later phases. */}
+      <LandingQuiz />
+      {/* What's-inside, order, feedback, B2B, footer arrive in later phases. */}
     </div>
   );
 }
