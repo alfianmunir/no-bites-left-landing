@@ -3,6 +3,7 @@ import "./globals.css";
 import { AuthProvider } from "@/lib/auth/AuthContext";
 import { CartProvider } from "@/lib/cart/CartContext";
 import { OrderFlowProvider } from "@/lib/order-flow/OrderFlowContext";
+import { LandingProvider } from "@/lib/landing/LandingContext";
 import OrderDrawer from "./_components/OrderDrawer";
 import Toasts from "./_components/Toasts";
 
@@ -18,9 +19,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <AuthProvider>
           <CartProvider>
             <OrderFlowProvider>
-              {children}
-              <OrderDrawer />
-              <Toasts />
+              <LandingProvider>
+                {children}
+                <OrderDrawer />
+                <Toasts />
+              </LandingProvider>
             </OrderFlowProvider>
           </CartProvider>
         </AuthProvider>

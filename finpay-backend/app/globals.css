@@ -222,3 +222,76 @@ a { cursor: pointer; }
   color: var(--ink);
 }
 .field-input:focus { outline: 2px solid var(--orange); outline-offset: -1px; }
+
+/* ============================================================= */
+/* Marketing landing (ported from the .dc.html prototype)         */
+/* ============================================================= */
+.nbl-landing { width: 100%; overflow-x: clip; background: var(--bg); color: var(--ink); }
+.nbl-landing .font-display { font-family: 'Gorditas', cursive; }
+.nbl-landing a { color: inherit; text-decoration: none; }
+.nbl-landing button { font-family: inherit; cursor: pointer; }
+
+@keyframes bobx { 0%,100% { transform: translateY(0) rotate(-6deg); } 50% { transform: translateY(-9px) rotate(-6deg); } }
+@keyframes bob2 { 0%,100% { transform: translateY(0) rotate(6deg); } 50% { transform: translateY(-7px) rotate(6deg); } }
+@keyframes popfade { 0% { opacity: 0; transform: scale(0.86); } 100% { opacity: 1; transform: scale(1); } }
+@keyframes marquee { from { transform: translate3d(0,0,0); } to { transform: translate3d(-50%,0,0); } }
+@keyframes heroIn { 0% { opacity: 0; transform: translateY(16px); } 100% { opacity: 1; transform: translateY(0); } }
+@keyframes drawerIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes panelIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes nblWiggle { 0%,100% { transform: rotate(-4deg); } 50% { transform: rotate(4deg); } }
+@keyframes nblPop { 0% { transform: scale(0.72); opacity: 0; } 60% { transform: scale(1.08); } 100% { transform: scale(1); opacity: 1; } }
+@keyframes nblFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+
+/* -------- Playful theme (opt-in overlay) -------- */
+.nbl-landing[data-playful="true"] {
+  background-image: radial-gradient(rgba(255,106,0,0.16) 2.5px, transparent 2.5px);
+  background-size: 24px 24px;
+}
+.nbl-landing[data-playful="true"] [data-r="menu-grid"] > div { border-radius: 28px; border-color: rgba(255,61,110,0.32); }
+.nbl-landing[data-playful="true"] [data-r="menu-grid"] > div:nth-child(odd) { transform: rotate(-1deg); }
+.nbl-landing[data-playful="true"] [data-r="menu-grid"] > div:nth-child(even) { transform: rotate(1deg); }
+.nbl-landing[data-playful="true"] [data-r="menu-grid"] > div:hover { transform: translateY(-7px) rotate(0deg) !important; box-shadow: 0 18px 36px rgba(255,61,110,0.18) !important; }
+.nbl-landing[data-playful="true"] [data-r="quiz-card"] { border-radius: 34px; border-width: 2px; border-color: rgba(255,106,0,0.30); }
+.nbl-landing[data-playful="true"] [data-r="hero-imgbox"] > img { animation: nblFloat 4s ease-in-out infinite; }
+.nbl-landing[data-playful="true"] [data-r="marquee"] { background: #ff3d6e !important; color: #fff5ec !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .nbl-landing [style*="animation"] { animation: none !important; }
+  .nbl-landing[data-playful="true"] * { animation: none !important; }
+}
+
+/* -------- Responsive -------- */
+@media (max-width: 1200px) {
+  .nbl-landing [data-r="nav"] { padding: 12px 20px !important; }
+  .nbl-landing [data-r="nav-links"], .nbl-landing [data-r="vibe"], .nbl-landing [data-r="palette"],
+  .nbl-landing [data-r="lang"], .nbl-landing [data-r="myorders-link"] { display: none !important; }
+  .nbl-landing [data-r="burger"] { display: inline-flex !important; }
+}
+@media (max-width: 860px) {
+  .nbl-landing [data-r="hero"] { grid-template-columns: 1fr !important; gap: 30px !important; padding: 40px 20px 56px !important; }
+  .nbl-landing [data-r="hero-copy"] { display: flex !important; flex-direction: column; align-items: center; text-align: center; }
+  .nbl-landing [data-r="hero-imgbox"] { width: 100% !important; max-width: 320px; height: auto !important; aspect-ratio: 10/11; }
+  .nbl-landing [data-r="h1"] { font-size: 48px !important; }
+  .nbl-landing [data-r="story"] { grid-template-columns: 1fr !important; gap: 40px !important; padding: 64px 20px !important; }
+  .nbl-landing [data-r="menu-sec"] { padding: 8px 20px 72px !important; }
+  .nbl-landing [data-r="menu-grid"] { grid-template-columns: repeat(2,1fr) !important; gap: 18px !important; }
+  .nbl-landing [data-r="treat-sec"] { padding: 64px 20px !important; }
+  .nbl-landing [data-r="treat"] { grid-template-columns: 1fr !important; gap: 32px !important; }
+  .nbl-landing [data-r="order-sec"] { padding: 72px 20px !important; }
+  .nbl-landing [data-r="order-grid"] { grid-template-columns: 1fr !important; }
+  .nbl-landing [data-r="feedback"] { padding: 64px 20px !important; }
+  .nbl-landing [data-r="footer"] { padding: 56px 20px 36px !important; }
+  .nbl-landing [data-r="footer-grid"] { grid-template-columns: 1fr !important; gap: 30px !important; }
+  .nbl-landing [data-r="b2b-sec"] { padding: 64px 20px !important; }
+  .nbl-landing [data-r="quiz-sec"] { padding: 8px 20px 72px !important; }
+  .nbl-landing [data-rpad] { padding-left: 20px !important; padding-right: 20px !important; }
+  .nbl-landing [data-rh2] { font-size: 36px !important; }
+  .nbl-landing [data-r="theme-grid"] { grid-template-columns: 1fr !important; gap: 10px !important; }
+}
+@media (max-width: 560px) {
+  .nbl-landing [data-r="hero"] { padding-top: 28px !important; }
+  .nbl-landing [data-r="h1"] { font-size: 40px !important; }
+  .nbl-landing [data-r="menu-grid"] { grid-template-columns: 1fr !important; }
+  .nbl-landing [data-rh2] { font-size: 31px !important; }
+  .nbl-landing [data-r="quiz-opts"] { grid-template-columns: 1fr !important; }
+}
