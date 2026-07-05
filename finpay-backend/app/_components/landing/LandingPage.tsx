@@ -16,6 +16,7 @@ import LandingQuiz from "./LandingQuiz";
 import LandingInside from "./LandingInside";
 import LandingTreat from "./LandingTreat";
 import LandingOrder from "./LandingOrder";
+import LandingB2B from "./LandingB2B";
 import LandingFeedback from "./LandingFeedback";
 
 export default function LandingPage({ openOrder = false }: { openOrder?: boolean }) {
@@ -36,8 +37,9 @@ export default function LandingPage({ openOrder = false }: { openOrder?: boolean
       <LandingInside />
       <LandingTreat />
       <LandingOrder />
+      <LandingB2B />
       <LandingFeedback />
-      {/* B2B/wholesale + footer + first-visit theme picker arrive in later phases. */}
+      {/* Footer + first-visit theme picker arrive in the next phase. */}
     </div>
   );
 }
