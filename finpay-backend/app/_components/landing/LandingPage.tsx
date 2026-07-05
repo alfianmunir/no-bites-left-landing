@@ -13,6 +13,10 @@ import LandingHero from "./LandingHero";
 import LandingStory from "./LandingStory";
 import LandingMenu from "./LandingMenu";
 import LandingQuiz from "./LandingQuiz";
+import LandingInside from "./LandingInside";
+import LandingTreat from "./LandingTreat";
+import LandingOrder from "./LandingOrder";
+import LandingFeedback from "./LandingFeedback";
 
 export default function LandingPage({ openOrder = false }: { openOrder?: boolean }) {
   const { themeVars, playful } = useLanding();
@@ -29,7 +33,11 @@ export default function LandingPage({ openOrder = false }: { openOrder?: boolean
       <LandingStory />
       <LandingMenu />
       <LandingQuiz />
-      {/* What's-inside, order, feedback, B2B, footer arrive in later phases. */}
+      <LandingInside />
+      <LandingTreat />
+      <LandingOrder />
+      <LandingFeedback />
+      {/* B2B/wholesale + footer + first-visit theme picker arrive in later phases. */}
     </div>
   );
 }
