@@ -9,9 +9,10 @@
  */
 "use client";
 
-import Link from "next/link";
 import { listPriceItems } from "@/lib/prices";
 import { useCart } from "@/lib/cart/CartContext";
+import { useOrderFlow } from "@/lib/order-flow/OrderFlowContext";
+import AppHeader from "./_components/AppHeader";
 
 const PRICES = listPriceItems();
 
@@ -27,7 +28,8 @@ function rupiah(n: number): string {
 }
 
 export default function ShopPage() {
-  const { itemCount, subtotal, addItem, openCart } = useCart();
+  const { itemCount, subtotal, addItem } = useCart();
+  const flow = useOrderFlow();
 
   const families = new Map<string, typeof PRICES>();
   for (const p of PRICES) {
@@ -36,12 +38,14 @@ export default function ShopPage() {
   }
 
   return (
+    <>
+    <AppHeader />
     <main style={{ maxWidth: 480, margin: "0 auto", paddingBottom: 100 }}>
       <div style={{ padding: "28px 20px 8px" }}>
         <div className="font-display" style={{ fontSize: 15, color: "var(--orange)" }}>No Bites Left</div>
         <div className="font-display" style={{ fontSize: 26, marginTop: 4 }}>Fresh, hand-baked cookies</div>
         <div style={{ fontSize: 13.5, color: "var(--soft)", marginTop: 6 }}>
-          Baked fresh to order — every batch ships 3 days after you order.
+          Baked fresh to order — ready to collect 3 days after you order, at our Kebagusan pickup point.
         </div>
       </div>
 
@@ -86,9 +90,9 @@ export default function ShopPage() {
       </div>
 
       <div style={{ padding: "8px 20px", display: "flex", justifyContent: "center" }}>
-        <Link href="/orders" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>
+        <button onClick={() => flow.open("orders")} style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", background: "transparent", border: "none", cursor: "pointer" }}>
           My Orders →
-        </Link>
+        </button>
       </div>
 
       {itemCount > 0 && (
@@ -105,7 +109,7 @@ export default function ShopPage() {
           }}
         >
           <button
-            onClick={openCart}
+            onClick={() => flow.open("cart")}
             className="btn-primary"
             style={{ maxWidth: 440, boxShadow: "0 4px 0 rgba(0,0,0,0.12)", display: "flex", justifyContent: "space-between", padding: "16px 22px" }}
           >
@@ -115,5 +119,6 @@ export default function ShopPage() {
         </div>
       )}
     </main>
+    </>
   );
 }

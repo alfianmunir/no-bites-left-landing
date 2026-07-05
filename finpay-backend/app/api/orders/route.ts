@@ -12,11 +12,14 @@ import { getStore } from "@/lib/db";
 import { getPriceItem } from "@/lib/prices";
 import { getCourierOption } from "@/lib/courier";
 import { isValidDeliveryDate } from "@/lib/deliveryDate";
+import { isValidPickupDate } from "@/lib/pickupDate";
+import { FULFILLMENT } from "@/lib/fulfillment";
 import { generateOrderId } from "@/lib/orders";
 import type { OrderItem, Customer, DeliveryAddress, CourierChoice } from "@/lib/orders";
 import { initiate } from "@/lib/finpay";
 import { logOrder } from "@/lib/log";
 import { getSession } from "@/lib/session";
+import { getSupabaseUser } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +35,8 @@ interface CartLineInput {
 interface OrderRequestBody {
   items?: unknown;
   customer?: unknown;
+  pickupDate?: unknown; // v1 PICKUP
+  // v2 DELIVERY (ignored while FULFILLMENT === "PICKUP"):
   deliveryAddress?: unknown;
   courierCode?: unknown;
   deliveryDate?: unknown;
@@ -94,29 +99,62 @@ export async function POST(req: Request): Promise<NextResponse> {
     return badRequest("invalid JSON body");
   }
 
-  // --- validate customer ---
-  const { customer, error: custErr } = validateCustomer(body.customer);
+  // --- identity: login is required at checkout (PRD §4.2). Email + name come
+  //     from the server-verified Supabase user, never the client. The mock
+  //     session is a dev fallback when Supabase isn't configured. The only
+  //     client-supplied contact field is the mobile phone (no address form in
+  //     pickup — Google doesn't provide a phone). ---
+  const authUser = await getSupabaseUser();
+  const legacy = authUser ? null : await getSession();
+  const identity = authUser
+    ? { id: authUser.id, email: authUser.email, name: authUser.name }
+    : legacy
+      ? { id: legacy.id, email: legacy.email, name: legacy.name }
+      : null;
+  if (!identity) return NextResponse.json({ error: "sign in required" }, { status: 401 });
+
+  const rawCustomer = (body.customer ?? {}) as Record<string, unknown>;
+  const nameParts = identity.name.trim().split(/\s+/);
+  const { customer, error: custErr } = validateCustomer({
+    email: identity.email,
+    firstName: nameParts[0] || "Guest",
+    lastName: nameParts.slice(1).join(" ") || "-",
+    mobilePhone: typeof rawCustomer.mobilePhone === "string" ? rawCustomer.mobilePhone : "",
+  });
   if (!customer) return badRequest(custErr!);
 
-  // --- validate delivery address ---
-  const { address, error: addrErr } = validateDeliveryAddress(body.deliveryAddress);
-  if (!address) return badRequest(addrErr!);
+  // --- fulfillment: PICKUP (v1) vs DELIVERY (v2, dormant behind the flag) ---
+  let pickupDate: string | null = null;
+  let deliveryDate: string | null = null;
+  let address: DeliveryAddress | null = null;
+  let courier: CourierChoice | null = null;
 
-  // --- validate courier: recompute fee server-side, never trust a client fee ---
-  const courierCode = typeof body.courierCode === "string" ? body.courierCode.trim() : "";
-  const courierOption = getCourierOption(courierCode);
-  if (!courierOption) return badRequest(`unknown courierCode: ${courierCode}`);
-  const courier: CourierChoice = {
-    code: courierOption.code,
-    name: courierOption.name,
-    fee: courierOption.fee,
-    etaLabel: courierOption.etaLabel,
-  };
+  if (FULFILLMENT === "DELIVERY") {
+    // v2 path — address + courier + delivery date. Kept for a flag-flip; not
+    // exercised in v1.
+    const { address: addr, error: addrErr } = validateDeliveryAddress(body.deliveryAddress);
+    if (!addr) return badRequest(addrErr!);
+    address = addr;
 
-  // --- validate delivery date: must be >= H+3 and within an open capacity window ---
-  const deliveryDate = typeof body.deliveryDate === "string" ? body.deliveryDate.trim() : "";
-  if (!deliveryDate || !isValidDeliveryDate(deliveryDate)) {
-    return badRequest(`invalid deliveryDate: ${deliveryDate}`);
+    const courierCode = typeof body.courierCode === "string" ? body.courierCode.trim() : "";
+    const courierOption = getCourierOption(courierCode);
+    if (!courierOption) return badRequest(`unknown courierCode: ${courierCode}`);
+    courier = {
+      code: courierOption.code,
+      name: courierOption.name,
+      fee: courierOption.fee,
+      etaLabel: courierOption.etaLabel,
+    };
+
+    const dd = typeof body.deliveryDate === "string" ? body.deliveryDate.trim() : "";
+    if (!dd || !isValidDeliveryDate(dd)) return badRequest(`invalid deliveryDate: ${dd}`);
+    deliveryDate = dd;
+  } else {
+    // v1 PICKUP path — pickup date only (>= H+3). No address, no courier, no
+    // delivery fee (E2E PRD §1a). Total is items only.
+    const pd = typeof body.pickupDate === "string" ? body.pickupDate.trim() : "";
+    if (!pd || !isValidPickupDate(pd)) return badRequest(`invalid pickupDate: ${pd}`);
+    pickupDate = pd;
   }
 
   // --- validate cart & recompute amount server-side ---
@@ -150,10 +188,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     items.push({ sku, name: `${p.name} (${p.variant})`, qty, unit_price: p.unitPrice });
   }
   if (amount <= 0) return badRequest("order amount must be positive");
-  amount += courier.fee;
+  // v1 PICKUP: items only, no shipping fee. v2 DELIVERY folds the server-side
+  // courier fee in (never a client-sent fee).
+  if (courier) amount += courier.fee;
 
   // --- create PENDING order ---
-  const session = await getSession();
   const store = getStore();
   await store.init();
   const orderId = generateOrderId();
@@ -163,10 +202,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     amount,
     customer,
     status: "PENDING",
+    fulfillment: FULFILLMENT,
+    pickupDate,
     deliveryAddress: address,
     deliveryDate,
     courier,
-    userId: session?.id ?? null,
+    userId: identity.id,
   });
   logOrder("created", { orderId, amount, lineCount: items.length });
 

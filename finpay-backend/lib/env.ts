@@ -29,10 +29,21 @@ export const env = {
   databaseUrl: optional("DATABASE_URL"),
   adminPassword: optional("ADMIN_PASSWORD"),
   opsNotifyEmail: optional("OPS_NOTIFY_EMAIL"),
-  // Signs the mock sign-in session cookie and the admin session cookie.
-  // Mock auth only — swap for real Google OAuth (NextAuth et al) before launch.
+  // Signs the admin session cookie (and the legacy mock session, kept for dev).
   sessionSecret: optional("SESSION_SECRET", "dev-insecure-session-secret-change-me"),
+  // Supabase — customer Google auth (PRD §6a). URL + anon key are public/safe.
+  supabase: {
+    url: optional("NEXT_PUBLIC_SUPABASE_URL"),
+    anonKey: optional("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+  },
+  // Resend transactional email (PRD §8).
+  resendApiKey: optional("RESEND_API_KEY"),
+  mailFrom: optional("MAIL_FROM", "orders@nobitesleft.com"),
+  mailReplyTo: optional("MAIL_REPLY_TO"),
 };
+
+/** Whether real Supabase auth is configured (else fall back to dev/mock). */
+export const hasSupabase = Boolean(env.supabase.url && env.supabase.anonKey);
 
 /** True in sandbox mode (dev Finpay host). Guards against accidental live cutover. */
 export const isSandbox = env.finpay.baseUrl.includes("devo.finnet.co.id");

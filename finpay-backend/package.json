@@ -13,10 +13,13 @@
     "test:phase2": "node --env-file=.env.local --import tsx scripts/test-phase2.ts"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.0",
+    "@supabase/supabase-js": "^2.110.0",
     "next": "^15.5.20",
     "pg": "8.13.1",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "resend": "^6.17.1"
   },
   "devDependencies": {
     "@types/node": "22.10.2",

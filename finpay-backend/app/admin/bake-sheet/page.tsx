@@ -15,11 +15,13 @@ export default async function BakeSheetPage({ searchParams }: { searchParams: Pr
 
   const store = getStore();
   await store.init();
-  const [paid, fulfilled] = await Promise.all([
+  // Everything not-yet-collected for the target pickup date (PRD §5.4).
+  const [paid, baking, ready] = await Promise.all([
     store.list({ status: "PAID" }),
-    store.list({ status: "FULFILLED" }),
+    store.list({ status: "BAKING" }),
+    store.list({ status: "READY_FOR_PICKUP" }),
   ]);
-  const orders = [...paid, ...fulfilled].filter((o) => o.delivery_date === targetDate);
+  const orders = [...paid, ...baking, ...ready].filter((o) => o.pickup_date === targetDate);
 
   const qtyBySku = new Map<string, number>();
   for (const o of orders) {

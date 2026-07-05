@@ -3,23 +3,23 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import type { Order, FulfillmentStage } from "@/lib/orders";
+import type { Order, OrderStatus } from "@/lib/orders";
+import { nextFulfillmentStatus, canTransition } from "@/lib/orders";
+import { PICKUP_LOCATION } from "@/lib/fulfillment";
 
 function rupiah(n: number): string {
   return "Rp " + n.toLocaleString("id-ID");
 }
 
-const STAGE_LABEL: Record<FulfillmentStage, string> = {
-  baking: "Baking",
-  out_for_delivery: "Out for delivery",
-  delivered: "Delivered",
+// Advance-button copy per next status (README §11).
+const ADVANCE_LABEL: Partial<Record<OrderStatus, string>> = {
+  BAKING: "Advance to Baking ›",
+  READY_FOR_PICKUP: "Advance to Ready for pickup ›",
+  PICKED_UP: "Mark picked up ✓",
 };
 
-function nextStage(stage: FulfillmentStage | null): FulfillmentStage | null {
-  if (stage === null || stage === "baking") return "out_for_delivery";
-  if (stage === "out_for_delivery") return "delivered";
-  return null;
-}
+// Pickup progression nodes for the mini progress bar.
+const PROGRESS: OrderStatus[] = ["PAID", "BAKING", "READY_FOR_PICKUP", "PICKED_UP"];
 
 function waLink(phone: string): string {
   const digits = phone.replace(/[^0-9]/g, "");
@@ -50,10 +50,10 @@ export default function AdminOrderDetail({ order }: { order: Order }) {
     }
   }
 
-  const stage = nextStage(order.fulfillment_stage);
-  const stageProgressIndex = order.fulfillment_stage
-    ? ["baking", "out_for_delivery", "delivered"].indexOf(order.fulfillment_stage)
-    : -1;
+  const next = nextFulfillmentStatus(order.status, order.fulfillment);
+  const progressIndex = PROGRESS.indexOf(order.status);
+  const phone = order.customer.mobilePhone;
+  const customerName = `${order.customer.firstName} ${order.customer.lastName}`.trim();
 
   return (
     <main style={{ maxWidth: 480, margin: "0 auto", minHeight: "100dvh", background: "var(--surface2)", display: "flex", flexDirection: "column" }}>
@@ -65,11 +65,11 @@ export default function AdminOrderDetail({ order }: { order: Order }) {
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 12, flex: 1 }}>
         <div style={{ padding: 12, borderRadius: 14, background: "#fff", border: "1.5px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
-            <div style={{ fontWeight: 800, fontSize: 14 }}>{order.delivery_address?.recipientName}</div>
-            <div style={{ fontSize: 12.5, color: "var(--soft)" }}>{order.delivery_address?.phone}</div>
+            <div style={{ fontWeight: 800, fontSize: 14 }}>{customerName || "Customer"}</div>
+            <div style={{ fontSize: 12.5, color: "var(--soft)" }}>{phone}</div>
           </div>
-          {order.delivery_address?.phone && (
-            <a href={waLink(order.delivery_address.phone)} target="_blank" rel="noreferrer" style={{ padding: "8px 12px", borderRadius: 999, background: "var(--tint-success)", color: "var(--green)", fontWeight: 800, fontSize: 12, textDecoration: "none" }}>
+          {phone && (
+            <a href={waLink(phone)} target="_blank" rel="noreferrer" style={{ padding: "8px 12px", borderRadius: 999, background: "var(--tint-success)", color: "var(--green)", fontWeight: 800, fontSize: 12, textDecoration: "none" }}>
               WhatsApp
             </a>
           )}
@@ -79,24 +79,22 @@ export default function AdminOrderDetail({ order }: { order: Order }) {
           {order.items.map((it) => (
             <div key={it.sku}>{it.qty}× {it.name}</div>
           ))}
-          <div style={{ color: "var(--soft)", marginTop: 4 }}>
-            {order.courier?.name} · {order.delivery_address?.fullAddress}
-          </div>
-          <div style={{ color: "var(--soft)" }}>Delivery date: {order.delivery_date} · {rupiah(order.amount)}</div>
+          <div style={{ color: "var(--soft)", marginTop: 4 }}>Pickup at {PICKUP_LOCATION.name}</div>
+          <div style={{ color: "var(--soft)" }}>Pickup date: {order.pickup_date ?? "—"} · {rupiah(order.amount)}</div>
         </div>
 
-        {["PAID", "FULFILLED"].includes(order.status) && (
+        {progressIndex >= 0 && (
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0" }}>
-              {["Paid", "Baking", "Delivery", "Done"].map((label, i) => (
-                <span key={label} style={{ display: "contents" }}>
-                  <span style={{ width: 16, height: 16, borderRadius: "50%", background: i <= stageProgressIndex + 1 ? "var(--green)" : "var(--line)" }} />
-                  {i < 3 && <span style={{ height: 2, flex: 1, background: i < stageProgressIndex + 1 ? "var(--green)" : "var(--line)" }} />}
+              {PROGRESS.map((s, i) => (
+                <span key={s} style={{ display: "contents" }}>
+                  <span style={{ width: 16, height: 16, borderRadius: "50%", background: i <= progressIndex ? "var(--green)" : "var(--line)" }} />
+                  {i < PROGRESS.length - 1 && <span style={{ height: 2, flex: 1, background: i < progressIndex ? "var(--green)" : "var(--line)" }} />}
                 </span>
               ))}
             </div>
             <div style={{ fontSize: 11, color: "var(--soft)", display: "flex", justifyContent: "space-between" }}>
-              <span>Paid</span><span>Baking</span><span>Delivery</span><span>Done</span>
+              <span>Paid</span><span>Baking</span><span>Ready</span><span>Picked up</span>
             </div>
           </>
         )}
@@ -105,13 +103,13 @@ export default function AdminOrderDetail({ order }: { order: Order }) {
       </div>
 
       <div style={{ padding: "14px 20px 20px", borderTop: "1.5px solid var(--line)", background: "#fff", display: "flex", flexDirection: "column", gap: 8 }}>
-        {order.status === "PAID" && stage && (
+        {next && ADVANCE_LABEL[next] && (
           <button className="btn-calm" disabled={busy} onClick={() => call("advance")}>
-            Mark as {STAGE_LABEL[stage]}
+            {ADVANCE_LABEL[next]}
           </button>
         )}
-        {order.status === "FULFILLED" && (
-          <div style={{ textAlign: "center", fontSize: 13, color: "var(--soft)", fontWeight: 700 }}>Delivered — order complete</div>
+        {order.status === "PICKED_UP" && (
+          <div style={{ textAlign: "center", fontSize: 13, color: "var(--soft)", fontWeight: 700 }}>Picked up — order complete</div>
         )}
         <div style={{ display: "flex", gap: 8 }}>
           {order.status === "PENDING" && (
@@ -119,7 +117,7 @@ export default function AdminOrderDetail({ order }: { order: Order }) {
               Cancel order
             </button>
           )}
-          {(order.status === "PAID" || order.status === "FULFILLED") && (
+          {canTransition(order.status, "REFUNDED", order.fulfillment) && (
             <button
               className="btn-outline"
               style={{ flex: 1, borderColor: "rgba(226,64,38,0.4)", color: "var(--red)" }}

@@ -11,7 +11,17 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { env } from "./env";
-import type { Order, OrderStatus, OrderItem, Customer, DeliveryAddress, CourierChoice, FulfillmentStage } from "./orders";
+import type {
+  Order,
+  OrderStatus,
+  OrderItem,
+  Customer,
+  DeliveryAddress,
+  CourierChoice,
+  Fulfillment,
+  StatusActor,
+  StatusEvent,
+} from "./orders";
 
 export interface NewOrderInput {
   id: string;
@@ -19,18 +29,23 @@ export interface NewOrderInput {
   amount: number;
   customer: Customer;
   status: OrderStatus;
-  deliveryAddress: DeliveryAddress | null;
-  deliveryDate: string | null;
-  courier: CourierChoice | null;
+  fulfillment: Fulfillment;
+  pickupDate: string | null;
   userId: string | null;
+  // v2 delivery (null for PICKUP orders)
+  deliveryAddress?: DeliveryAddress | null;
+  deliveryDate?: string | null;
+  courier?: CourierChoice | null;
 }
 
+/**
+ * Non-status field patches only. Status changes go through `setStatus` so the
+ * status_history audit trail (E2E PRD §6) is always appended atomically.
+ */
 export interface OrderUpdate {
-  status?: OrderStatus;
   finpay_reference?: string | null;
   redirect_url?: string | null;
   expiry_link?: string | null;
-  fulfillment_stage?: FulfillmentStage | null;
 }
 
 export interface OrderStore {
@@ -38,10 +53,16 @@ export interface OrderStore {
   create(input: NewOrderInput): Promise<Order>;
   get(id: string): Promise<Order | null>;
   update(id: string, patch: OrderUpdate): Promise<Order | null>;
+  /** Transition status + append a status_history event ({status, at, by}). */
+  setStatus(id: string, status: OrderStatus, by: StatusActor): Promise<Order | null>;
   appendCallback(id: string, entry: unknown): Promise<Order | null>;
   list(filter?: { status?: OrderStatus; userId?: string }): Promise<Order[]>;
   /** PENDING orders whose expiry_link is before `before` (for reconciliation). */
   findStalePending(before: string): Promise<Order[]>;
+}
+
+function statusEvent(status: OrderStatus, by: StatusActor): StatusEvent {
+  return { status, at: new Date().toISOString(), by };
 }
 
 // ---------------------------------------------------------------------------
@@ -97,14 +118,16 @@ class FileStore implements OrderStore {
         amount: input.amount,
         customer: input.customer,
         status: input.status,
+        fulfillment: input.fulfillment,
+        pickup_date: input.pickupDate ?? null,
         finpay_reference: null,
         redirect_url: null,
         expiry_link: null,
         callback_log: [],
-        delivery_address: input.deliveryAddress,
-        delivery_date: input.deliveryDate,
-        courier: input.courier,
-        fulfillment_stage: null,
+        status_history: [statusEvent(input.status, "system")],
+        delivery_address: input.deliveryAddress ?? null,
+        delivery_date: input.deliveryDate ?? null,
+        courier: input.courier ?? null,
         user_id: input.userId,
         created_at: now,
         updated_at: now,
@@ -112,6 +135,23 @@ class FileStore implements OrderStore {
       all[order.id] = order;
       await this.writeAll(all);
       return order;
+    });
+  }
+
+  setStatus(id: string, status: OrderStatus, by: StatusActor): Promise<Order | null> {
+    return this.serialize(async () => {
+      const all = await this.readAll();
+      const cur = all[id];
+      if (!cur) return null;
+      const next: Order = {
+        ...cur,
+        status,
+        status_history: [...(cur.status_history ?? []), statusEvent(status, by)],
+        updated_at: new Date().toISOString(),
+      };
+      all[id] = next;
+      await this.writeAll(all);
+      return next;
     });
   }
 
@@ -199,14 +239,16 @@ class PostgresStore implements OrderStore {
       amount: Number(r.amount),
       customer: r.customer as Customer,
       status: r.status as OrderStatus,
+      fulfillment: ((r.fulfillment as Fulfillment) ?? "PICKUP"),
+      pickup_date: (r.pickup_date as string) ?? null,
       finpay_reference: (r.finpay_reference as string) ?? null,
       redirect_url: (r.redirect_url as string) ?? null,
       expiry_link: r.expiry_link ? new Date(r.expiry_link as string).toISOString() : null,
       callback_log: (r.callback_log as unknown[]) ?? [],
+      status_history: (r.status_history as StatusEvent[]) ?? [],
       delivery_address: (r.delivery_address as Order["delivery_address"]) ?? null,
       delivery_date: (r.delivery_date as string) ?? null,
       courier: (r.courier as Order["courier"]) ?? null,
-      fulfillment_stage: (r.fulfillment_stage as Order["fulfillment_stage"]) ?? null,
       user_id: (r.user_id as string) ?? null,
       created_at: new Date(r.created_at as string).toISOString(),
       updated_at: new Date(r.updated_at as string).toISOString(),
@@ -222,8 +264,10 @@ class PostgresStore implements OrderStore {
   async create(input: NewOrderInput): Promise<Order> {
     const pool = await this.pool();
     const { rows } = await pool.query(
-      `INSERT INTO orders (id, items, amount, customer, status, delivery_address, delivery_date, courier, user_id)
-       VALUES ($1, $2::jsonb, $3, $4::jsonb, $5, $6::jsonb, $7, $8::jsonb, $9)
+      `INSERT INTO orders
+         (id, items, amount, customer, status, fulfillment, pickup_date, status_history,
+          delivery_address, delivery_date, courier, user_id)
+       VALUES ($1, $2::jsonb, $3, $4::jsonb, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12)
        RETURNING *`,
       [
         input.id,
@@ -231,13 +275,31 @@ class PostgresStore implements OrderStore {
         input.amount,
         JSON.stringify(input.customer),
         input.status,
+        input.fulfillment,
+        input.pickupDate ?? null,
+        JSON.stringify([statusEvent(input.status, "system")]),
         input.deliveryAddress ? JSON.stringify(input.deliveryAddress) : null,
-        input.deliveryDate,
+        input.deliveryDate ?? null,
         input.courier ? JSON.stringify(input.courier) : null,
         input.userId,
       ],
     );
     return this.rowToOrder(rows[0]);
+  }
+
+  async setStatus(id: string, status: OrderStatus, by: StatusActor): Promise<Order | null> {
+    const pool = await this.pool();
+    // Append the event and set status in one statement so the audit trail can
+    // never drift from the status column.
+    const { rows } = await pool.query(
+      `UPDATE orders
+         SET status = $2,
+             status_history = COALESCE(status_history, '[]'::jsonb) || $3::jsonb,
+             updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [id, status, JSON.stringify([statusEvent(status, by)])],
+    );
+    return rows[0] ? this.rowToOrder(rows[0]) : null;
   }
 
   async get(id: string): Promise<Order | null> {

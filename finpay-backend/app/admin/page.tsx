@@ -23,18 +23,28 @@ export default async function AdminQueuePage() {
 
   const store = getStore();
   await store.init();
-  const [paid, expired] = await Promise.all([
+  // Active pickup queue = paid + in production, grouped by pickup date (PRD §5.2).
+  const [paid, baking, ready, expired] = await Promise.all([
     store.list({ status: "PAID" }),
+    store.list({ status: "BAKING" }),
+    store.list({ status: "READY_FOR_PICKUP" }),
     store.list({ status: "EXPIRED" }),
   ]);
+  const active = [...paid, ...baking, ...ready];
+
+  const STATUS_LABEL: Record<string, string> = {
+    PAID: "Paid — start baking",
+    BAKING: "Baking",
+    READY_FOR_PICKUP: "Ready for pickup",
+  };
 
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
   const tomorrow = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
 
   const groups = new Map<string, Order[]>();
-  for (const o of paid.sort((a, b) => (a.delivery_date ?? "").localeCompare(b.delivery_date ?? ""))) {
-    const label = groupLabel(o.delivery_date, today, tomorrow);
+  for (const o of active.sort((a, b) => (a.pickup_date ?? "").localeCompare(b.pickup_date ?? ""))) {
+    const label = groupLabel(o.pickup_date, today, tomorrow);
     groups.set(label, [...(groups.get(label) ?? []), o]);
   }
   const groupOrder = ["PAST DUE", "TODAY", "TOMORROW", "UPCOMING", "NO DATE SET"];
@@ -42,7 +52,7 @@ export default async function AdminQueuePage() {
   return (
     <main style={{ maxWidth: 480, margin: "0 auto", minHeight: "100dvh", background: "var(--surface2)" }}>
       <div style={{ padding: "18px 20px 8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontWeight: 900, fontSize: 18, color: "var(--choco)" }}>Order Queue</div>
+        <div style={{ fontWeight: 900, fontSize: 18, color: "var(--choco)" }}>Pickup queue</div>
         <Link href="/admin/bake-sheet" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>Bake sheet →</Link>
       </div>
 
@@ -62,8 +72,8 @@ export default async function AdminQueuePage() {
                   {g} · {groups.get(g)!.length}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {groups.get(g)!.map((o, i) => {
-                    const isNew = i === 0 && g !== "UPCOMING";
+                  {groups.get(g)!.map((o) => {
+                    const isNew = o.status === "PAID"; // needs ack until an admin advances it
                     return (
                       <Link
                         key={o.id}
@@ -89,13 +99,13 @@ export default async function AdminQueuePage() {
                           <span style={{ fontSize: 12, fontWeight: 800, color: "var(--green)" }}>{rupiah(o.amount)}</span>
                         </div>
                         <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>
-                          {o.delivery_address?.recipientName} · {o.delivery_address?.phone}
+                          {o.customer.firstName} {o.customer.lastName} · {o.customer.mobilePhone}
                         </div>
                         <div style={{ fontSize: 12, color: "var(--soft)" }}>
-                          {o.items.reduce((s, it) => s + it.qty, 0)} items · {o.courier?.name}
+                          {o.items.reduce((s, it) => s + it.qty, 0)} items{o.pickup_date ? ` · pickup ${o.pickup_date}` : ""}
                         </div>
                         <div style={{ marginTop: 6, fontSize: 11, fontWeight: 800, color: "var(--choco)" }}>
-                          {o.fulfillment_stage === "out_for_delivery" ? "Out for delivery" : "Baking"}
+                          {STATUS_LABEL[o.status] ?? o.status}
                         </div>
                       </Link>
                     );

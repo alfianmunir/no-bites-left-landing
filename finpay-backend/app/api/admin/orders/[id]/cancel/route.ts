@@ -23,7 +23,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: "Finpay cancel failed" }, { status: 502 });
   }
 
-  const updated = await store.update(id, { status: "CANCELLED" });
+  const updated = await store.setStatus(id, "CANCELLED", "admin");
   logOrder("admin_cancel", { orderId: id });
   return NextResponse.json({ order: updated });
 }

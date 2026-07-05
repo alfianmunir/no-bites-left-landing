@@ -39,7 +39,27 @@ export interface InitiateParams {
   failUrl: string;
   backUrl: string;
   callbackUrl: string;
+  /** Preselected payment method on the hosted page; defaults to QRIS. */
+  sourceOfFunds?: string;
 }
+
+/**
+ * Finpay Hosted Payment launch set (E2E PRD §3 / README §5). QRIS is the
+ * default/primary method (PRD §4). `sourceOfFunds` preselects it on the hosted
+ * page. PRD §12 Q5 (hard-lock vs default-with-switch) is still open — this
+ * defaults to QRIS while leaving the others enabled; confirm against sandbox.
+ */
+export const DEFAULT_SOURCE_OF_FUNDS = "qris";
+export const ENABLED_SOURCES_OF_FUNDS = [
+  "qris",
+  "dana",
+  "ovo",
+  "shopeepay",
+  "vabca",
+  "vabni",
+  "vabri",
+  "vamandiri",
+] as const;
 
 export interface InitiateResult {
   ok: boolean;
@@ -90,6 +110,8 @@ export async function initiate(params: InitiateParams): Promise<InitiateResult> 
       backUrl: params.backUrl,
       callbackUrl: params.callbackUrl,
     },
+    // QRIS is the default payment method on the hosted page (PRD §4).
+    sourceOfFunds: params.sourceOfFunds ?? DEFAULT_SOURCE_OF_FUNDS,
   };
   if (params.items && params.items.length > 0) {
     (body.order as Record<string, unknown>).item = params.items.map((it) => ({

@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { isAdminSession } from "@/lib/adminAuth";
 import { getStore } from "@/lib/db";
+import { canTransition } from "@/lib/orders";
 import { refundOrder } from "@/lib/finpay";
 import { logOrder } from "@/lib/log";
 
@@ -15,8 +16,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   await store.init();
   const order = await store.get(id);
   if (!order) return NextResponse.json({ error: "order not found" }, { status: 404 });
-  if (order.status !== "PAID" && order.status !== "FULFILLED") {
-    return NextResponse.json({ error: "only PAID or FULFILLED orders can be refunded" }, { status: 400 });
+  // Refundable while paid but not yet completed (PAID..READY_FOR_PICKUP, or the
+  // delivery equivalents). PICKED_UP/DELIVERED and unpaid states are rejected.
+  if (!canTransition(order.status, "REFUNDED", order.fulfillment)) {
+    return NextResponse.json({ error: `cannot refund an order in ${order.status}` }, { status: 400 });
   }
 
   const result = await refundOrder(id, order.amount);
@@ -25,7 +28,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: "Finpay refund failed" }, { status: 502 });
   }
 
-  const updated = await store.update(id, { status: "REFUNDED" });
+  const updated = await store.setStatus(id, "REFUNDED", "admin");
   logOrder("admin_refund", { orderId: id, amount: order.amount });
   return NextResponse.json({ order: updated });
 }

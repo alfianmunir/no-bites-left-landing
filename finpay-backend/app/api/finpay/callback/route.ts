@@ -19,7 +19,7 @@ import { getStore } from "@/lib/db";
 import { verifyCallbackSignature, checkStatus } from "@/lib/finpay";
 import { mapFinpayStatus } from "@/lib/finpayStatus";
 import { notifyOpsPaid } from "@/lib/notify";
-import { isFinal } from "@/lib/orders";
+import { isFinal, canTransition } from "@/lib/orders";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
@@ -118,14 +118,23 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
   }
 
-  const updated = await store.update(orderId, {
-    status: mapped,
-    finpay_reference: parsed.order?.reference || order.finpay_reference,
-    // Small ops team bakes immediately on payment — start the fulfillment
-    // timeline right away rather than requiring a separate admin click.
-    ...(mapped === "PAID" ? { fulfillment_stage: "baking" as const } : {}),
-  });
+  // finpay_reference is a non-status field — persist it independently of the
+  // status transition so the audit trail (setStatus) stays clean.
+  const reference = parsed.order?.reference || order.finpay_reference;
+  if (reference && reference !== order.finpay_reference) {
+    await store.update(orderId, { finpay_reference: reference });
+  }
 
+  // Guard the state machine (PRD §7): reject illegal webhook-driven transitions
+  // (e.g. REFUNDED on an unpaid order) rather than blindly applying `mapped`.
+  if (!canTransition(order.status, mapped, order.fulfillment)) {
+    logOrder("callback_illegal_transition", { orderId, from: order.status, to: mapped });
+    return ack();
+  }
+
+  // Mark PAID (or EXPIRED/CANCELLED/REFUNDED). BAKING is a separate admin step
+  // (PRD §5.3) — payment does not auto-advance production.
+  const updated = await store.setStatus(orderId, mapped, "webhook");
   logOrder("callback_processed", { orderId, from: order.status, to: mapped });
 
   if (mapped === "PAID" && updated) {

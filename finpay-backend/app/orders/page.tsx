@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getSession } from "@/lib/session";
+import { getSupabaseUser } from "@/lib/supabase/server";
 import { getStore } from "@/lib/db";
 import type { Order } from "@/lib/orders";
 
@@ -12,23 +13,23 @@ function rupiah(n: number): string {
 
 const CHIP: Record<string, { bg: string; color: string; label: string }> = {
   PENDING: { bg: "var(--tint-amber)", color: "var(--choco)", label: "Waiting payment" },
-  PAID_BAKING: { bg: "#fff3e2", color: "var(--choco)", label: "Baking" },
-  PAID_OUT: { bg: "#e8f6ff", color: "var(--blue)", label: "Out for delivery" },
-  FULFILLED: { bg: "#e9f5e7", color: "var(--green)", label: "Delivered" },
+  PAID: { bg: "#fff3e2", color: "var(--choco)", label: "Paid" },
+  BAKING: { bg: "#fff3e2", color: "var(--choco)", label: "Baking" },
+  READY_FOR_PICKUP: { bg: "var(--tint-amber)", color: "var(--choco)", label: "Ready for pickup" },
+  PICKED_UP: { bg: "#e9f5e7", color: "var(--green)", label: "Picked up" },
   EXPIRED: { bg: "var(--surface2)", color: "var(--soft)", label: "Expired" },
   CANCELLED: { bg: "var(--surface2)", color: "var(--soft)", label: "Cancelled" },
   REFUNDED: { bg: "#e8f6ff", color: "var(--blue)", label: "Refunded" },
 };
 
 function chipFor(order: Order) {
-  if (order.status === "PAID") {
-    return order.fulfillment_stage === "out_for_delivery" ? CHIP.PAID_OUT : CHIP.PAID_BAKING;
-  }
   return CHIP[order.status] ?? CHIP.PENDING;
 }
 
 export default async function MyOrdersPage() {
-  const session = await getSession();
+  const authUser = await getSupabaseUser();
+  const legacy = authUser ? null : await getSession();
+  const session = authUser ? { id: authUser.id } : legacy;
 
   if (!session) {
     return (
@@ -84,7 +85,7 @@ export default async function MyOrdersPage() {
                     #{o.id} · {o.items.reduce((s, i) => s + i.qty, 0)} items
                   </div>
                   <div style={{ fontSize: 12, color: "var(--soft)" }}>
-                    {o.delivery_date ? `Arrives ${o.delivery_date}` : rupiah(o.amount)}
+                    {o.pickup_date ? `Pickup ${o.pickup_date}` : rupiah(o.amount)}
                   </div>
                 </div>
                 <div className="pill" style={{ background: chip.bg, color: chip.color }}>{chip.label}</div>
