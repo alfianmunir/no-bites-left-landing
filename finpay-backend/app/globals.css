@@ -261,6 +261,16 @@ a { cursor: pointer; }
   .nbl-landing[data-playful="true"] * { animation: none !important; }
 }
 
+/* -------- Review showcase marquee -------- */
+.nbl-review-track:hover { animation-play-state: paused; }
+@media (max-width: 860px) {
+  .nbl-review-row { margin-left: -20px !important; margin-right: -20px !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nbl-review-track { animation: none !important; transform: none !important; }
+  .nbl-review-row { overflow-x: auto !important; -webkit-mask-image: none !important; mask-image: none !important; }
+}
+
 /* -------- Responsive -------- */
 @media (max-width: 1200px) {
   .nbl-landing [data-r="nav"] { padding: 12px 20px !important; }

@@ -35,6 +35,7 @@ export interface Strings {
   orderKicker: string; orderTitle: string; orderSub: string; orderOn: string; orderDM: string;
   fbKicker: string; fbTitle: string; fbSub: string; fbRatingL: string; fbNameL: string; fbNameP: string; fbFlavourL: string; fbFlavourP: string; fbMsgL: string; fbMsgP: string;
   fbSend: string; fbSending: string; fbNeed: string; fbAnother: string;
+  fbAvgLabel: string; fbWallTitle: string; fbShareTitle: string; fbShareSub: string;
   footerTag: string; footerDesc: string; footerOrderC: string; footerExplore: string; footerWholesale: string;
   rights: string; bakedJkt: string;
   pickerTitle: string; pickerSub: string; maybeLater: string;
@@ -113,6 +114,7 @@ export const STR: Record<Lang, Strings> = {
     fbKicker: "Feedback", fbTitle: "How were your bites?", fbSub: "Tell us what you loved (or what we can make even better).",
     fbRatingL: "Your rating", fbNameL: "Name", fbNameP: "Your name", fbFlavourL: "Which flavour", fbFlavourP: "Pick a flavour…", fbMsgL: "Message", fbMsgP: "Which flavour, and how was it?",
     fbSend: "Send feedback", fbSending: "Sending…", fbNeed: "Add a name & rating", fbAnother: "Leave another",
+    fbAvgLabel: "average across 200+ boxes", fbWallTitle: "Real notes from real boxes", fbShareTitle: "Add your own", fbShareSub: "Every note lands straight in our inbox — we read all of them.",
     footerTag: "Bites you won't get enough of.", footerDesc: "Premium small-batch cookies, brownies & apple pie — baked fresh to order in Jakarta by Alfian, MasterChef Indonesia S10.",
     footerOrderC: "Order & contact", footerExplore: "Explore", footerWholesale: "Wholesale",
     rights: "© 2026 No Bites Left. All rights reserved.", bakedJkt: "Baked fresh · Jakarta, Indonesia",
@@ -208,6 +210,7 @@ export const STR: Record<Lang, Strings> = {
     fbKicker: "Ulasan", fbTitle: "Bagaimana gigitanmu?", fbSub: "Ceritakan apa yang kamu suka (atau yang bisa kami tingkatkan).",
     fbRatingL: "Rating kamu", fbNameL: "Nama", fbNameP: "Nama kamu", fbFlavourL: "Rasa apa", fbFlavourP: "Pilih rasa…", fbMsgL: "Pesan", fbMsgP: "Rasa apa, dan bagaimana rasanya?",
     fbSend: "Kirim ulasan", fbSending: "Mengirim…", fbNeed: "Isi nama & rating", fbAnother: "Tulis lagi",
+    fbAvgLabel: "rata-rata dari 200+ box", fbWallTitle: "Cerita nyata dari box asli", fbShareTitle: "Tambahkan ulasanmu", fbShareSub: "Setiap ulasan langsung masuk ke inbox kami — kami baca semuanya.",
     footerTag: "Gigitan yang bikin nagih.", footerDesc: "Cookies, brownies & apple pie premium small-batch — dipanggang fresh per pesanan di Jakarta oleh Alfian, MasterChef Indonesia S10.",
     footerOrderC: "Pesan & kontak", footerExplore: "Jelajahi", footerWholesale: "Grosir",
     rights: "© 2026 No Bites Left. Hak cipta dilindungi.", bakedJkt: "Dipanggang fresh · Jakarta, Indonesia",

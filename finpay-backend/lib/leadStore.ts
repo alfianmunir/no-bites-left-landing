@@ -34,6 +34,8 @@ export interface LeadStore {
   init(): Promise<void>;
   saveFeedback(input: FeedbackInput): Promise<FeedbackRow>;
   saveWholesale(input: WholesaleInput): Promise<WholesaleRow>;
+  /** Reviews for the public showcase: rating >= minRating, non-empty message, newest first. */
+  listFeedback(opts?: { minRating?: number; limit?: number }): Promise<FeedbackRow[]>;
 }
 
 function newId(): string {
@@ -94,6 +96,15 @@ class FileLeadStore implements LeadStore {
       return row;
     });
   }
+  async listFeedback(opts?: { minRating?: number; limit?: number }): Promise<FeedbackRow[]> {
+    const minRating = opts?.minRating ?? 4;
+    const limit = opts?.limit ?? 50;
+    const rows = await this.readAll<FeedbackRow>(FB_PATH);
+    return rows
+      .filter((r) => r.rating >= minRating && (r.message ?? "").trim() !== "")
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
+  }
 }
 
 // ---------------------------------------------------------------- Postgres store
@@ -151,6 +162,15 @@ class PostgresLeadStore implements LeadStore {
     );
     const r = rows[0];
     return { id: r.id, name: r.name, role: r.role, cafe: r.cafe, city: r.city, contact: r.contact, volume: r.volume ?? null, createdAt: new Date(r.created_at).toISOString() };
+  }
+  async listFeedback(opts?: { minRating?: number; limit?: number }): Promise<FeedbackRow[]> {
+    const pool = await this.pool();
+    const { rows } = await pool.query(
+      `SELECT * FROM feedback WHERE rating >= $1 AND message IS NOT NULL AND btrim(message) <> ''
+       ORDER BY created_at DESC LIMIT $2`,
+      [opts?.minRating ?? 4, opts?.limit ?? 50],
+    );
+    return rows.map((r) => ({ id: r.id, rating: Number(r.rating), name: r.name, flavour: r.flavour ?? null, message: r.message ?? null, createdAt: new Date(r.created_at).toISOString() }));
   }
 }
 

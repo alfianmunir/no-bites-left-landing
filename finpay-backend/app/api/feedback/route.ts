@@ -8,6 +8,21 @@ import { logOrder } from "@/lib/log";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** GET — public reviews for the feedback showcase (4★+, non-empty message). */
+export async function GET(): Promise<NextResponse> {
+  try {
+    const store = getLeadStore();
+    await store.init();
+    const reviews = await store.listFeedback({ minRating: 4, limit: 50 });
+    return NextResponse.json({
+      reviews: reviews.map((r) => ({ name: r.name, rating: r.rating, flavour: r.flavour, message: r.message, createdAt: r.createdAt })),
+    });
+  } catch (e) {
+    logOrder("feedback_list_error", { error: String(e) });
+    return NextResponse.json({ reviews: [] });
+  }
+}
+
 export async function POST(req: Request): Promise<NextResponse> {
   // Abuse control: cap submissions per IP (mitigates mail-bomb / DB spam).
   const rl = rateLimit(`feedback:${clientIp(req)}`, 5, 10 * 60 * 1000);
