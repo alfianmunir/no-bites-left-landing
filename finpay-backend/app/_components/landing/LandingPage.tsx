@@ -21,13 +21,23 @@ import LandingFeedback from "./LandingFeedback";
 import LandingFooter from "./LandingFooter";
 import LandingThemePicker from "./LandingThemePicker";
 
-export default function LandingPage({ openOrder = false }: { openOrder?: boolean }) {
+export default function LandingPage({ openOrder = false, scrollTo }: { openOrder?: boolean; scrollTo?: string }) {
   const { themeVars, playful } = useLanding();
   const flow = useOrderFlow();
 
   useEffect(() => {
     if (openOrder) flow.open("cart");
   }, [openOrder, flow]);
+
+  // Deep-link routes (/menu, /feedback, /b2b) render the landing and jump to a
+  // section. Sections load async (menu/reviews fetch) and images shift layout,
+  // so scroll a few times as it settles. scroll-margin-top handles the sticky nav.
+  useEffect(() => {
+    if (!scrollTo) return;
+    const jump = () => document.getElementById(scrollTo)?.scrollIntoView({ block: "start" });
+    const timers = [80, 450, 900].map((ms) => window.setTimeout(jump, ms));
+    return () => timers.forEach(clearTimeout);
+  }, [scrollTo]);
 
   return (
     <div className="nbl-landing" data-playful={playful ? "true" : "false"} style={themeVars}>
