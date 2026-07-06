@@ -70,15 +70,17 @@ CREATE TABLE IF NOT EXISTS feedback (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS wholesale_requests (
-  id         TEXT PRIMARY KEY,
-  name       TEXT NOT NULL,
-  role       TEXT NOT NULL,
-  cafe       TEXT NOT NULL,
-  city       TEXT NOT NULL,
-  contact    TEXT NOT NULL,
-  volume     TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  role        TEXT NOT NULL,
+  cafe        TEXT NOT NULL,
+  city        TEXT NOT NULL,
+  contact     TEXT NOT NULL,
+  volume      TEXT,
+  followed_up BOOLEAN NOT NULL DEFAULT false,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE wholesale_requests ADD COLUMN IF NOT EXISTS followed_up BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS feedback_created_at_idx           ON feedback (created_at);
 CREATE INDEX IF NOT EXISTS wholesale_requests_created_at_idx ON wholesale_requests (created_at);
 

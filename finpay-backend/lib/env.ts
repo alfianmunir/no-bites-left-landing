@@ -40,6 +40,9 @@ export const env = {
   resendApiKey: optional("RESEND_API_KEY"),
   mailFrom: optional("MAIL_FROM", "orders@nobitesleft.com"),
   mailReplyTo: optional("MAIL_REPLY_TO"),
+  // Cloudflare Turnstile captcha (bot protection on public forms). Site key is
+  // public (NEXT_PUBLIC_TURNSTILE_SITE_KEY, read client-side); secret is here.
+  turnstileSecretKey: optional("TURNSTILE_SECRET_KEY"),
 };
 
 /** Whether real Supabase auth is configured (else fall back to dev/mock). */

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { notifyFeedback } from "@/lib/notify";
 import { getLeadStore } from "@/lib/leadStore";
 import { rateLimit, clientIp } from "@/lib/rateLimit";
+import { verifyCaptcha } from "@/lib/captcha";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
@@ -30,7 +31,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "too many requests" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
   }
 
-  let body: { rating?: unknown; name?: unknown; flavour?: unknown; message?: unknown; hp?: unknown };
+  let body: { rating?: unknown; name?: unknown; flavour?: unknown; message?: unknown; hp?: unknown; captchaToken?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -39,6 +40,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   // Honeypot: bots fill hidden fields; humans don't. Pretend success, drop it.
   if (typeof body.hp === "string" && body.hp.trim() !== "") {
     return NextResponse.json({ ok: true, saved: false, emailed: false });
+  }
+  // Captcha (Turnstile) — no-op if not configured.
+  if (!(await verifyCaptcha(typeof body.captchaToken === "string" ? body.captchaToken : undefined, clientIp(req)))) {
+    return NextResponse.json({ error: "captcha verification failed" }, { status: 400 });
   }
   const rating = Number(body.rating);
   const name = typeof body.name === "string" ? body.name.trim() : "";

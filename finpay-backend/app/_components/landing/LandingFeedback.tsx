@@ -9,6 +9,7 @@
  */
 import { useEffect, useState } from "react";
 import { useLanding } from "@/lib/landing/LandingContext";
+import Captcha, { captchaEnabled } from "@/app/_components/Captcha";
 
 const FLAVOURS = ["Apple Pie", "OG Cookies", "Choco Cookies", "Hazel Cookies", "Matcha Cookies", "Fudgy Brownies Bites"];
 const AVATAR_COLORS = ["var(--orange)", "var(--choco)", "var(--green)", "var(--blue)"];
@@ -72,6 +73,7 @@ export default function LandingFeedback() {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
   const [hp, setHp] = useState(""); // honeypot — must stay empty for real users
+  const [captchaToken, setCaptchaToken] = useState("");
 
   useEffect(() => {
     fetch("/api/feedback").then((r) => r.json()).then((d) => setReviews(d.reviews ?? [])).catch(() => setReviews([]));
@@ -93,10 +95,11 @@ export default function LandingFeedback() {
 
   const send = async () => {
     if (!name.trim() || rating < 1) { setError(t.fbNeed); return; }
+    if (captchaEnabled && !captchaToken) { setError("Please complete the captcha"); return; }
     setError("");
     setSending(true);
     try {
-      const res = await fetch("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rating, name: name.trim(), flavour, message: msg, hp }) });
+      const res = await fetch("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rating, name: name.trim(), flavour, message: msg, hp, captchaToken }) });
       if (!res.ok) { setSending(false); setError(t.fbNeed); return; }
       setSending(false);
       setSent(true);
@@ -173,6 +176,7 @@ export default function LandingFeedback() {
               </select>
               <label style={label}>{t.fbMsgL}</label>
               <textarea value={msg} onChange={(e) => setMsg(e.target.value)} placeholder={t.fbMsgP} rows={4} style={{ ...input, resize: "vertical" }} />
+              <Captcha onToken={setCaptchaToken} />
               <button onClick={send} disabled={sending} style={{ width: "100%", padding: 17, borderRadius: 14, background: "var(--orange)", color: "#fff", fontWeight: 800, fontSize: 18, border: "none", boxShadow: "0 5px 0 rgba(0,0,0,0.14)", cursor: "pointer" }}>{sending ? t.fbSending : t.fbSend}</button>
               {error && <p style={{ color: "var(--red)", fontSize: 13.5, fontWeight: 700, margin: "13px 0 0", textAlign: "center" }}>{error}</p>}
             </div>

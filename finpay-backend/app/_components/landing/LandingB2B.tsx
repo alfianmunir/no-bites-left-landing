@@ -8,6 +8,7 @@
  */
 import { useState } from "react";
 import { useLanding } from "@/lib/landing/LandingContext";
+import Captcha, { captchaEnabled } from "@/app/_components/Captcha";
 
 const WA_NUMBER = "6281776376636";
 
@@ -26,17 +27,19 @@ export default function LandingB2B() {
   const [error, setError] = useState("");
   const [form, setForm] = useState({ name: "", role: "", cafe: "", city: "", contact: "", volume: "" });
   const [hp, setHp] = useState(""); // honeypot — must stay empty for real users
+  const [captchaToken, setCaptchaToken] = useState("");
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   const submit = async () => {
     if (!form.name.trim() || !form.role || !form.cafe.trim() || !form.city.trim() || !form.contact.trim()) { setError(b.errReq); return; }
+    if (captchaEnabled && !captchaToken) { setError("Please complete the captcha"); return; }
     setError("");
     setSending(true);
     try {
       const res = await fetch("/api/wholesale", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, hp }),
+        body: JSON.stringify({ ...form, hp, captchaToken }),
       });
       setSending(false);
       if (!res.ok) { setError(b.errReq); return; }
@@ -156,7 +159,8 @@ export default function LandingB2B() {
                   <label style={labelStyle}>{b.fVolume} · {b.fVolumeOpt}</label>
                   <select value={form.volume} onChange={set("volume")} style={{ ...inputStyle, cursor: "pointer" }}><option value="">—</option>{b.volOptions.map((o) => <option key={o} value={o}>{o}</option>)}</select>
                 </div>
-                <button onClick={submit} disabled={sending} style={{ width: "100%", marginTop: 22, padding: 16, borderRadius: 14, background: "var(--orange)", color: "#fff", fontWeight: 800, fontSize: 17, border: "none", boxShadow: "0 5px 0 rgba(0,0,0,0.14)", cursor: "pointer" }}>{sending ? b.sending : b.submit}</button>
+                <div style={{ marginTop: 18 }}><Captcha onToken={setCaptchaToken} /></div>
+                <button onClick={submit} disabled={sending} style={{ width: "100%", marginTop: 4, padding: 16, borderRadius: 14, background: "var(--orange)", color: "#fff", fontWeight: 800, fontSize: 17, border: "none", boxShadow: "0 5px 0 rgba(0,0,0,0.14)", cursor: "pointer" }}>{sending ? b.sending : b.submit}</button>
                 {error && <p style={{ color: "var(--red)", fontSize: 13.5, fontWeight: 700, margin: "13px 0 0", textAlign: "center" }}>{error}</p>}
                 <div style={{ textAlign: "center", marginTop: 16 }}>
                   <a href={waLink} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 7, color: "var(--green)", fontWeight: 800, fontSize: 14, textDecoration: "underline", textUnderlineOffset: 3 }}><WaIcon size={15} /> {b.waBtn}</a>

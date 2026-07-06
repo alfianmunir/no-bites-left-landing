@@ -25,6 +25,7 @@ export interface WholesaleRow {
   city: string;
   contact: string;
   volume: string | null;
+  followedUp: boolean;
   createdAt: string;
 }
 export interface FeedbackInput { rating: number; name: string; flavour?: string; message?: string }
@@ -36,6 +37,10 @@ export interface LeadStore {
   saveWholesale(input: WholesaleInput): Promise<WholesaleRow>;
   /** Reviews for the public showcase: rating >= minRating, non-empty message, newest first. */
   listFeedback(opts?: { minRating?: number; limit?: number }): Promise<FeedbackRow[]>;
+  /** All wholesale/tasting requests, newest first (admin). */
+  listWholesale(): Promise<WholesaleRow[]>;
+  /** Flag/unflag a wholesale request as followed up (admin). */
+  setWholesaleFollowedUp(id: string, value: boolean): Promise<void>;
 }
 
 function newId(): string {
@@ -89,7 +94,7 @@ class FileLeadStore implements LeadStore {
       const row: WholesaleRow = {
         id: newId(), name: input.name, role: input.role, cafe: input.cafe,
         city: input.city, contact: input.contact, volume: input.volume ?? null,
-        createdAt: new Date().toISOString(),
+        followedUp: false, createdAt: new Date().toISOString(),
       };
       rows.push(row);
       await this.writeAll(WS_PATH, rows);
@@ -104,6 +109,19 @@ class FileLeadStore implements LeadStore {
       .filter((r) => r.rating >= minRating && (r.message ?? "").trim() !== "")
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, limit);
+  }
+  async listWholesale(): Promise<WholesaleRow[]> {
+    const rows = await this.readAll<WholesaleRow>(WS_PATH);
+    return rows
+      .map((r) => ({ ...r, followedUp: r.followedUp ?? false }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  setWholesaleFollowedUp(id: string, value: boolean): Promise<void> {
+    return this.serialize(async () => {
+      const rows = await this.readAll<WholesaleRow>(WS_PATH);
+      const row = rows.find((r) => r.id === id);
+      if (row) { row.followedUp = value; await this.writeAll(WS_PATH, rows); }
+    });
   }
 }
 
@@ -125,8 +143,10 @@ CREATE TABLE IF NOT EXISTS wholesale_requests (
   city       TEXT NOT NULL,
   contact    TEXT NOT NULL,
   volume     TEXT,
+  followed_up BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);`;
+);
+ALTER TABLE wholesale_requests ADD COLUMN IF NOT EXISTS followed_up BOOLEAN NOT NULL DEFAULT false;`;
 
 class PostgresLeadStore implements LeadStore {
   private poolPromise: Promise<import("pg").Pool> | null = null;
@@ -161,7 +181,7 @@ class PostgresLeadStore implements LeadStore {
       [newId(), input.name, input.role, input.cafe, input.city, input.contact, input.volume ?? null],
     );
     const r = rows[0];
-    return { id: r.id, name: r.name, role: r.role, cafe: r.cafe, city: r.city, contact: r.contact, volume: r.volume ?? null, createdAt: new Date(r.created_at).toISOString() };
+    return { id: r.id, name: r.name, role: r.role, cafe: r.cafe, city: r.city, contact: r.contact, volume: r.volume ?? null, followedUp: r.followed_up ?? false, createdAt: new Date(r.created_at).toISOString() };
   }
   async listFeedback(opts?: { minRating?: number; limit?: number }): Promise<FeedbackRow[]> {
     const pool = await this.pool();
@@ -171,6 +191,15 @@ class PostgresLeadStore implements LeadStore {
       [opts?.minRating ?? 4, opts?.limit ?? 50],
     );
     return rows.map((r) => ({ id: r.id, rating: Number(r.rating), name: r.name, flavour: r.flavour ?? null, message: r.message ?? null, createdAt: new Date(r.created_at).toISOString() }));
+  }
+  async listWholesale(): Promise<WholesaleRow[]> {
+    const pool = await this.pool();
+    const { rows } = await pool.query("SELECT * FROM wholesale_requests ORDER BY created_at DESC");
+    return rows.map((r) => ({ id: r.id, name: r.name, role: r.role, cafe: r.cafe, city: r.city, contact: r.contact, volume: r.volume ?? null, followedUp: r.followed_up ?? false, createdAt: new Date(r.created_at).toISOString() }));
+  }
+  async setWholesaleFollowedUp(id: string, value: boolean): Promise<void> {
+    const pool = await this.pool();
+    await pool.query("UPDATE wholesale_requests SET followed_up = $2 WHERE id = $1", [id, value]);
   }
 }
 
