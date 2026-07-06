@@ -81,3 +81,25 @@ CREATE TABLE IF NOT EXISTS wholesale_requests (
 );
 CREATE INDEX IF NOT EXISTS feedback_created_at_idx           ON feedback (created_at);
 CREATE INDEX IF NOT EXISTS wholesale_requests_created_at_idx ON wholesale_requests (created_at);
+
+-- Menu catalog (Phase 1): one row per SKU. Server-side price source of truth for
+-- orders. Add/edit rows here to change the menu. Auto-seeded from lib/menuStore
+-- CATALOG on first init if empty. Coming-soon items have available=false / null price.
+CREATE TABLE IF NOT EXISTS menu_items (
+  sku            TEXT PRIMARY KEY,
+  family         TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  variant        TEXT,
+  unit_price     INTEGER,            -- integer IDR; null for coming-soon
+  image          TEXT NOT NULL,
+  accent         TEXT NOT NULL,
+  tag            TEXT,
+  tag_id         TEXT,
+  note           TEXT,
+  note_id        TEXT,
+  description    TEXT,
+  description_id TEXT,
+  available      BOOLEAN NOT NULL DEFAULT true,
+  sort_order     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS menu_items_sort_idx ON menu_items (sort_order);

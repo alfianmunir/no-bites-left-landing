@@ -9,7 +9,7 @@
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { getStore } from "@/lib/db";
-import { getPriceItem } from "@/lib/prices";
+import { getMenuStore } from "@/lib/menuStore";
 import { getCourierOption } from "@/lib/courier";
 import { isValidDeliveryDate } from "@/lib/deliveryDate";
 import { isValidPickupDate } from "@/lib/pickupDate";
@@ -158,7 +158,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     return badRequest(`too many line items (max ${MAX_LINES})`);
   }
 
-  // Merge duplicate SKUs, validate each against the price list.
+  // Load the server-side menu (price source of truth) and index by SKU.
+  const menuStore = getMenuStore();
+  await menuStore.init();
+  const menu = await menuStore.list();
+  const bySku = new Map(menu.map((m) => [m.sku, m]));
+
+  // Merge duplicate SKUs, validate each against the menu.
   const qtyBySku = new Map<string, number>();
   for (const rawLine of body.items as CartLineInput[]) {
     const sku = typeof rawLine?.sku === "string" ? rawLine.sku.trim() : "";
@@ -167,8 +173,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (!Number.isInteger(qty) || qty <= 0 || qty > MAX_QTY_PER_LINE) {
       return badRequest(`invalid qty for ${sku} (1-${MAX_QTY_PER_LINE})`, { sku });
     }
-    if (!getPriceItem(sku)) {
-      return badRequest(`unknown sku: ${sku}`, { sku });
+    const m = bySku.get(sku);
+    if (!m || !m.available || m.unitPrice == null) {
+      return badRequest(`unknown or unavailable sku: ${sku}`, { sku });
     }
     qtyBySku.set(sku, (qtyBySku.get(sku) ?? 0) + qty);
   }
@@ -176,9 +183,9 @@ export async function POST(req: Request): Promise<NextResponse> {
   const items: OrderItem[] = [];
   let amount = 0;
   for (const [sku, qty] of qtyBySku) {
-    const p = getPriceItem(sku)!;
-    amount += p.unitPrice * qty;
-    items.push({ sku, name: `${p.name} (${p.variant})`, qty, unit_price: p.unitPrice });
+    const m = bySku.get(sku)!;
+    amount += m.unitPrice! * qty;
+    items.push({ sku, name: m.variant ? `${m.name} (${m.variant})` : m.name, qty, unit_price: m.unitPrice! });
   }
   if (amount <= 0) return badRequest("order amount must be positive");
   // v1 PICKUP: items only, no shipping fee. v2 DELIVERY folds the server-side

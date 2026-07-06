@@ -30,7 +30,7 @@ interface CartContextValue {
   isOpen: boolean;
   openCart: () => void;
   closeCart: () => void;
-  addItem: (sku: string, qty?: number) => void;
+  addItem: (sku: string, qty?: number, line?: { name: string; variant: string; unitPrice: number }) => void;
   setQty: (sku: string, qty: number) => void;
   removeItem: (sku: string) => void;
   clearCart: () => void;
@@ -78,15 +78,17 @@ export function CartProvider({ children }: { children: ReactNode }) {
     setToasts((cur) => cur.filter((t) => t.id !== id));
   }, []);
 
-  const addItem = useCallback((sku: string, qty: number = 1) => {
-    const price = getPriceItem(sku);
-    if (!price) return;
+  const addItem = useCallback((sku: string, qty: number = 1, line?: { name: string; variant: string; unitPrice: number }) => {
+    // Prefer caller-supplied line data (DB-driven menu) so new SKUs not in the
+    // static price list still add; fall back to the static list (e.g. the quiz).
+    const info = line ?? getPriceItem(sku);
+    if (!info) return;
     setItems((cur) => {
       const existing = cur.find((l) => l.sku === sku);
       if (existing) {
         return cur.map((l) => (l.sku === sku ? { ...l, qty: l.qty + qty } : l));
       }
-      return [...cur, { sku, name: price.name, variant: price.variant, unitPrice: price.unitPrice, qty }];
+      return [...cur, { sku, name: info.name, variant: info.variant, unitPrice: info.unitPrice, qty }];
     });
   }, []);
 
