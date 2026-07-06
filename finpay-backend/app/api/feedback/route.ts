@@ -2,17 +2,28 @@
 import { NextResponse } from "next/server";
 import { notifyFeedback } from "@/lib/notify";
 import { getLeadStore } from "@/lib/leadStore";
+import { rateLimit, clientIp } from "@/lib/rateLimit";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request): Promise<NextResponse> {
-  let body: { rating?: unknown; name?: unknown; flavour?: unknown; message?: unknown };
+  // Abuse control: cap submissions per IP (mitigates mail-bomb / DB spam).
+  const rl = rateLimit(`feedback:${clientIp(req)}`, 5, 10 * 60 * 1000);
+  if (!rl.ok) {
+    return NextResponse.json({ error: "too many requests" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
+  }
+
+  let body: { rating?: unknown; name?: unknown; flavour?: unknown; message?: unknown; hp?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
+  }
+  // Honeypot: bots fill hidden fields; humans don't. Pretend success, drop it.
+  if (typeof body.hp === "string" && body.hp.trim() !== "") {
+    return NextResponse.json({ ok: true, saved: false, emailed: false });
   }
   const rating = Number(body.rating);
   const name = typeof body.name === "string" ? body.name.trim() : "";

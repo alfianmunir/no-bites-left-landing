@@ -19,6 +19,7 @@ export default function LandingFeedback() {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
+  const [hp, setHp] = useState(""); // honeypot — must stay empty for real users
 
   const label: React.CSSProperties = { display: "block", fontWeight: 800, fontSize: 13, letterSpacing: "0.03em", textTransform: "uppercase", color: "var(--soft)", marginBottom: 8 };
   const input: React.CSSProperties = { width: "100%", padding: "14px 16px", borderRadius: 12, border: "1.5px solid var(--line)", background: "var(--bg)", color: "var(--ink)", fontSize: 16, fontWeight: 600, marginBottom: 18, outline: "none" };
@@ -31,7 +32,7 @@ export default function LandingFeedback() {
       const res = await fetch("/api/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rating, name: name.trim(), flavour, message: msg }),
+        body: JSON.stringify({ rating, name: name.trim(), flavour, message: msg, hp }),
       });
       if (!res.ok) { setSending(false); setError(t.fbNeed); return; }
       setSending(false);
@@ -60,6 +61,7 @@ export default function LandingFeedback() {
           </div>
         ) : (
           <div>
+            <input type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" value={hp} onChange={(e) => setHp(e.target.value)} style={{ position: "absolute", left: "-9999px", width: 1, height: 1, opacity: 0 }} />
             <label style={{ ...label, marginBottom: 10 }}>{t.fbRatingL}</label>
             <div style={{ display: "flex", gap: 8, marginBottom: 22 }}>
               {[1, 2, 3, 4, 5].map((s) => (

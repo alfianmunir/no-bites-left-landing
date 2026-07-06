@@ -168,3 +168,38 @@ const ALPHA_DASH = /^[A-Za-z0-9-]{1,30}$/;
 export function isValidOrderId(id: string): boolean {
   return ALPHA_DASH.test(id);
 }
+
+/**
+ * Whitelisted, customer-safe projection of an order for client-facing reads.
+ * Deliberately omits PII and payment-processor internals — `customer`
+ * (email/phone/name), `callback_log` (raw Finpay payloads), `finpay_reference`,
+ * `user_id`, `status_history`, and the v2 delivery fields. The status page +
+ * drawer only need these fields.
+ */
+export interface PublicOrder {
+  id: string;
+  status: OrderStatus;
+  fulfillment: Fulfillment;
+  pickup_date: string | null;
+  amount: number;
+  items: OrderItem[];
+  redirect_url: string | null;
+  expiry_link: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function publicOrderView(o: Order): PublicOrder {
+  return {
+    id: o.id,
+    status: o.status,
+    fulfillment: o.fulfillment,
+    pickup_date: o.pickup_date,
+    amount: o.amount,
+    items: o.items,
+    redirect_url: o.redirect_url,
+    expiry_link: o.expiry_link,
+    created_at: o.created_at,
+    updated_at: o.updated_at,
+  };
+}

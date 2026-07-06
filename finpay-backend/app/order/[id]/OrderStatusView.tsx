@@ -11,7 +11,7 @@
  */
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import type { Order, OrderStatus } from "@/lib/orders";
+import type { PublicOrder, OrderStatus } from "@/lib/orders";
 import { PICKUP_LOCATION, SUPPORT_WHATSAPP } from "@/lib/fulfillment";
 import { formatPickupDate } from "@/lib/pickupDate";
 
@@ -19,7 +19,7 @@ function rupiah(n: number): string {
   return "Rp " + n.toLocaleString("id-ID");
 }
 
-function pickupDateLabel(order: Order): string | null {
+function pickupDateLabel(order: PublicOrder): string | null {
   return order.pickup_date ? formatPickupDate(order.pickup_date) : null;
 }
 
@@ -109,7 +109,7 @@ function OrderTimeline({ status }: { status: OrderStatus }) {
   );
 }
 
-function PickupCard({ order }: { order: Order }) {
+function PickupCard({ order }: { order: PublicOrder }) {
   const label = pickupDateLabel(order);
   return (
     <div style={{ padding: 14, borderRadius: 16, background: "var(--surface)", border: "1.5px solid var(--line)", display: "flex", gap: 12 }}>
@@ -125,7 +125,7 @@ function PickupCard({ order }: { order: Order }) {
   );
 }
 
-function ItemsSummary({ order }: { order: Order }) {
+function ItemsSummary({ order }: { order: PublicOrder }) {
   const itemCount = order.items.reduce((s, i) => s + i.qty, 0);
   return (
     <div style={{ fontSize: 13, color: "var(--soft)" }}>
@@ -142,7 +142,7 @@ const TERMINAL_COPY: Record<string, { icon: string; title: string; blurb: string
 
 const ACTIVE_PICKUP: OrderStatus[] = ["PAID", "BAKING", "READY_FOR_PICKUP"];
 
-export default function OrderStatusView({ order, from }: { order: Order; from: string | null }) {
+export default function OrderStatusView({ order, from }: { order: PublicOrder; from: string | null }) {
   const countdown = useCountdown(order.status === "PENDING" ? order.expiry_link : null);
   const dateLabel = pickupDateLabel(order);
 

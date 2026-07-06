@@ -18,8 +18,7 @@ import { generateOrderId } from "@/lib/orders";
 import type { OrderItem, Customer, DeliveryAddress, CourierChoice } from "@/lib/orders";
 import { initiate } from "@/lib/finpay";
 import { logOrder } from "@/lib/log";
-import { getSession } from "@/lib/session";
-import { getSupabaseUser } from "@/lib/supabase/server";
+import { getRequester } from "@/lib/identity";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -104,13 +103,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   //     session is a dev fallback when Supabase isn't configured. The only
   //     client-supplied contact field is the mobile phone (no address form in
   //     pickup — Google doesn't provide a phone). ---
-  const authUser = await getSupabaseUser();
-  const legacy = authUser ? null : await getSession();
-  const identity = authUser
-    ? { id: authUser.id, email: authUser.email, name: authUser.name }
-    : legacy
-      ? { id: legacy.id, email: legacy.email, name: legacy.name }
-      : null;
+  const identity = await getRequester();
   if (!identity) return NextResponse.json({ error: "sign in required" }, { status: 401 });
 
   const rawCustomer = (body.customer ?? {}) as Record<string, unknown>;

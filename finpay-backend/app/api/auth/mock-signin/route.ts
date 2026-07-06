@@ -5,10 +5,16 @@
  */
 import { NextResponse } from "next/server";
 import { createMockSession, encodeSession, SESSION_COOKIE, getSession } from "@/lib/session";
+import { hasSupabase } from "@/lib/env";
 
 export const runtime = "nodejs";
 
 export async function POST(): Promise<NextResponse> {
+  // SECURITY: DEV-only stand-in for Google sign-in. Disabled once real Supabase
+  // auth is configured — otherwise anyone could mint an identity here and bypass
+  // sign-in (order routes also ignore mock sessions in that case, lib/identity.ts).
+  if (hasSupabase) return NextResponse.json({ error: "not found" }, { status: 404 });
+
   const existing = await getSession();
   const session = existing ?? createMockSession();
   const res = NextResponse.json(session);

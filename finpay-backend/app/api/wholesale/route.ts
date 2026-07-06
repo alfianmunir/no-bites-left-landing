@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { notifyWholesale } from "@/lib/notify";
 import { getLeadStore } from "@/lib/leadStore";
+import { rateLimit, clientIp } from "@/lib/rateLimit";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
@@ -12,11 +13,20 @@ function str(v: unknown, max = 120): string {
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
+  const rl = rateLimit(`wholesale:${clientIp(req)}`, 5, 10 * 60 * 1000);
+  if (!rl.ok) {
+    return NextResponse.json({ error: "too many requests" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
+  }
+
   let body: Record<string, unknown>;
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid JSON" }, { status: 400 });
+  }
+  // Honeypot: bots fill hidden fields; humans don't. Pretend success, drop it.
+  if (typeof body.hp === "string" && body.hp.trim() !== "") {
+    return NextResponse.json({ ok: true, saved: false, emailed: false });
   }
   const name = str(body.name);
   const role = str(body.role, 40);

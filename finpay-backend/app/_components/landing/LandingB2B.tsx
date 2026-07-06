@@ -25,6 +25,7 @@ export default function LandingB2B() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({ name: "", role: "", cafe: "", city: "", contact: "", volume: "" });
+  const [hp, setHp] = useState(""); // honeypot — must stay empty for real users
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   const submit = async () => {
@@ -35,7 +36,7 @@ export default function LandingB2B() {
       const res = await fetch("/api/wholesale", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, hp }),
       });
       setSending(false);
       if (!res.ok) { setError(b.errReq); return; }
@@ -143,6 +144,7 @@ export default function LandingB2B() {
                   <button onClick={close} aria-label="Close" style={{ flex: "none", width: 40, height: 40, borderRadius: 12, border: "1.5px solid var(--line)", background: "var(--bg)", color: "var(--ink)", fontSize: 24, lineHeight: 1 }}>×</button>
                 </div>
                 <p style={{ fontSize: 15, color: "var(--soft)", margin: "10px 0 22px", lineHeight: 1.5 }}>{b.formSub}</p>
+                <input type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" value={hp} onChange={(e) => setHp(e.target.value)} style={{ position: "absolute", left: "-9999px", width: 1, height: 1, opacity: 0 }} />
                 <div data-r="b2b-formgrid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                   <div><label style={labelStyle}>{b.fName}</label><input value={form.name} onChange={set("name")} style={inputStyle} /></div>
                   <div><label style={labelStyle}>{b.fRole}</label><select value={form.role} onChange={set("role")} style={{ ...inputStyle, cursor: "pointer" }}><option value="">{b.rolePlaceholder}</option>{b.roleOptions.map((r) => <option key={r} value={r}>{r}</option>)}</select></div>

@@ -1,6 +1,5 @@
 import Link from "next/link";
-import { getSession } from "@/lib/session";
-import { getSupabaseUser } from "@/lib/supabase/server";
+import { getRequester } from "@/lib/identity";
 import { getStore } from "@/lib/db";
 import type { Order } from "@/lib/orders";
 
@@ -27,9 +26,7 @@ function chipFor(order: Order) {
 }
 
 export default async function MyOrdersPage() {
-  const authUser = await getSupabaseUser();
-  const legacy = authUser ? null : await getSession();
-  const session = authUser ? { id: authUser.id } : legacy;
+  const session = await getRequester();
 
   if (!session) {
     return (

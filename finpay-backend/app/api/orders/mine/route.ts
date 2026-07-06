@@ -4,20 +4,19 @@
  */
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
-import { getSupabaseUser } from "@/lib/supabase/server";
-import { getSession } from "@/lib/session";
+import { getRequester } from "@/lib/identity";
+import { publicOrderView } from "@/lib/orders";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<NextResponse> {
-  const authUser = await getSupabaseUser();
-  const legacy = authUser ? null : await getSession();
-  const userId = authUser?.id ?? legacy?.id ?? null;
-  if (!userId) return NextResponse.json({ orders: [] });
+  const requester = await getRequester();
+  if (!requester) return NextResponse.json({ orders: [] });
 
   const store = getStore();
   await store.init();
-  const orders = await store.list({ userId });
-  return NextResponse.json({ orders });
+  const orders = await store.list({ userId: requester.id });
+  // Whitelisted projection — never leak customer PII / callback_log to the client.
+  return NextResponse.json({ orders: orders.map(publicOrderView) });
 }
