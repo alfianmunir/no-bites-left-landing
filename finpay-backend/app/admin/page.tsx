@@ -54,6 +54,7 @@ export default async function AdminQueuePage() {
       <div style={{ padding: "18px 20px 8px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontWeight: 900, fontSize: 18, color: "var(--choco)" }}>Pickup queue</div>
         <div style={{ display: "flex", gap: 16 }}>
+          <Link href="/admin/ops/stock" style={{ fontSize: 13, fontWeight: 800, color: "var(--choco)", textDecoration: "none" }}>Ops →</Link>
           <Link href="/admin/wholesale" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>Wholesale →</Link>
           <Link href="/admin/bake-sheet" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>Bake sheet →</Link>
         </div>
