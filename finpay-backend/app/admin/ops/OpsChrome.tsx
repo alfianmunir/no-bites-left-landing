@@ -19,6 +19,7 @@ const TABS: Array<{ href: string; label: string }> = [
   { href: "/admin/ops/production", label: "Production" },
   { href: "/admin/ops/orders", label: "Orders" },
   { href: "/admin/ops/money", label: "Money" },
+  { href: "/admin/ops/team", label: "Team" },
   { href: "/admin/ops/opname", label: "Opname" },
   { href: "/admin/ops/waste", label: "Waste" },
   { href: "/admin/ops/pricing", label: "Pricing" },

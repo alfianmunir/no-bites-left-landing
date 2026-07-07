@@ -1181,3 +1181,237 @@ export async function markAssetOwned(input: {
     client.release();
   }
 }
+
+// --- M5 HR (staff, attendance, payroll) --------------------------------------
+
+export interface StaffRow {
+  id: string;
+  name: string;
+  role: string;
+  payType: string;
+  rate: number;
+  batchBonus: number;
+  equityPct: number | null;
+  active: boolean;
+}
+
+export interface PayrollPreviewLine {
+  staffId: string;
+  name: string;
+  payType: string;
+  attendanceDays: number;
+  qualifyingBatches: number;
+  base: number;
+  batchIncentive: number;
+  thrAccrual: number;
+  net: number;
+}
+
+export interface PayrollRunRow {
+  id: string;
+  period: string;
+  status: string;
+  total: number;
+  staffCount: number;
+  createdAt: string;
+}
+
+export async function listStaff(): Promise<StaffRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT id, name, role, pay_type, rate, batch_bonus, equity_pct, active
+       FROM ops.staff ORDER BY active DESC, name`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    role: r.role as string,
+    payType: r.pay_type as string,
+    rate: num(r.rate),
+    batchBonus: num(r.batch_bonus),
+    equityPct: r.equity_pct == null ? null : num(r.equity_pct),
+    active: Boolean(r.active),
+  }));
+}
+
+export async function createStaff(input: {
+  name: string;
+  role: string;
+  payType: string;
+  rate: number;
+  batchBonus: number;
+}): Promise<string> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `INSERT INTO ops.staff (name, role, pay_type, rate, batch_bonus, hired_at)
+     VALUES ($1, $2, $3, $4, $5, CURRENT_DATE) RETURNING id`,
+    [input.name.trim(), input.role, input.payType, input.rate, input.batchBonus],
+  );
+  return rows[0].id as string;
+}
+
+export async function setStaffActive(staffId: string, active: boolean): Promise<boolean> {
+  const p = await pool();
+  const { rowCount } = await p.query(`UPDATE ops.staff SET active = $2 WHERE id = $1`, [staffId, active]);
+  return (rowCount ?? 0) > 0;
+}
+
+/** Log a worked day (attendance). One row per staff per date (idempotent). */
+export async function logAttendance(staffId: string, date: string): Promise<void> {
+  const p = await pool();
+  await p.query(
+    `INSERT INTO ops.attendance (staff_id, date, source) VALUES ($1, $2, 'admin')
+     ON CONFLICT DO NOTHING`,
+    [staffId, date],
+  );
+}
+
+/** Days worked per staff within [start,end]. */
+async function attendanceDaysByStaff(start: string, end: string): Promise<Map<string, number>> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT staff_id, count(DISTINCT date)::int AS days FROM ops.attendance
+      WHERE date BETWEEN $1 AND $2 GROUP BY staff_id`,
+    [start, end],
+  );
+  const m = new Map<string, number>();
+  for (const r of rows) m.set(r.staff_id as string, num(r.days));
+  return m;
+}
+
+/** Batches closed in [start,end] at yield ≥95% of plan (drives the quality bonus). */
+async function qualifyingBatches(start: string, end: string): Promise<number> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT count(*)::int AS n FROM ops.production_batches
+      WHERE status = 'closed' AND baked_at BETWEEN $1 AND $2
+        AND planned_qty > 0 AND actual_yield / planned_qty >= 0.95`,
+    [start, end],
+  );
+  return num(rows[0].n);
+}
+
+async function thrRate(): Promise<number> {
+  const p = await pool();
+  const { rows } = await p.query(`SELECT (value #>> '{}')::numeric AS r FROM ops.config WHERE key = 'thr_accrual_rate'`);
+  return rows[0] ? num(rows[0].r) : 0.0833;
+}
+
+/** Period "YYYY-MM" → first/last calendar day. */
+function periodBounds(period: string): { start: string; end: string } {
+  const [y, m] = period.split("-").map(Number);
+  const start = `${period}-01`;
+  const end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+  return { start, end };
+}
+
+export async function getPayrollPreview(period: string): Promise<{ lines: PayrollPreviewLine[]; total: number; thrTotal: number; alreadyRun: boolean }> {
+  const { computePayrollLine } = await import("./opsFinance");
+  const { start, end } = periodBounds(period);
+  const p = await pool();
+  const [staff, days, batches, rate, existing] = await Promise.all([
+    listStaff(),
+    attendanceDaysByStaff(start, end),
+    qualifyingBatches(start, end),
+    thrRate(),
+    p.query(`SELECT 1 FROM ops.payroll_runs WHERE period = $1 LIMIT 1`, [period]),
+  ]);
+  const active = staff.filter((s) => s.active);
+  const lines: PayrollPreviewLine[] = active.map((s) => {
+    const attendanceDays = days.get(s.id) ?? 0;
+    const line = computePayrollLine({ payType: s.payType, rate: s.rate, batchBonus: s.batchBonus }, { attendanceDays, qualifyingBatches: batches, thrRate: rate });
+    return {
+      staffId: s.id,
+      name: s.name,
+      payType: s.payType,
+      attendanceDays,
+      qualifyingBatches: batches,
+      base: line.base,
+      batchIncentive: line.batchIncentive,
+      thrAccrual: line.thrAccrual,
+      net: line.net,
+    };
+  });
+  return {
+    lines,
+    total: lines.reduce((s, l) => s + l.net, 0),
+    thrTotal: lines.reduce((s, l) => s + l.thrAccrual, 0),
+    alreadyRun: (existing.rowCount ?? 0) > 0,
+  };
+}
+
+/** Run payroll for a period: create the run + lines and post one cash-out for
+ *  the total net (THR accrues but is not disbursed here). Idempotent per period. */
+export async function runPayroll(period: string): Promise<{ runId: string; total: number }> {
+  const { computePayrollLine } = await import("./opsFinance");
+  const { start, end } = periodBounds(period);
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const dup = await client.query(`SELECT 1 FROM ops.payroll_runs WHERE period = $1 LIMIT 1`, [period]);
+    if ((dup.rowCount ?? 0) > 0) throw new Error("payroll already run for this period");
+
+    const [staff, days, batches, rate] = await Promise.all([
+      listStaff(),
+      attendanceDaysByStaff(start, end),
+      qualifyingBatches(start, end),
+      thrRate(),
+    ]);
+    const active = staff.filter((s) => s.active);
+    const computed = active.map((s) => ({
+      s,
+      line: computePayrollLine({ payType: s.payType, rate: s.rate, batchBonus: s.batchBonus }, { attendanceDays: days.get(s.id) ?? 0, qualifyingBatches: batches, thrRate: rate }),
+    }));
+    const total = computed.reduce((sum, c) => sum + c.line.net, 0);
+
+    const run = await client.query(
+      `INSERT INTO ops.payroll_runs (period, status, total) VALUES ($1, 'paid', $2) RETURNING id`,
+      [period, total],
+    );
+    const runId = run.rows[0].id as string;
+
+    for (const c of computed) {
+      await client.query(
+        `INSERT INTO ops.payroll_lines (run_id, staff_id, base, batch_incentive, deductions, thr_accrual, net)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [runId, c.s.id, c.line.base, c.line.batchIncentive, c.line.deductions, c.line.thrAccrual, c.line.net],
+      );
+    }
+
+    if (total > 0) {
+      await client.query(
+        `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+         VALUES ('out', $1, 'bank', 'payroll', 'payroll_run', $2, $3, $4)`,
+        [total, runId, end, `Payroll ${period}`],
+      );
+    }
+
+    await client.query("COMMIT");
+    return { runId, total };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listPayrollRuns(): Promise<PayrollRunRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pr.id, pr.period, pr.status, pr.total, pr.created_at,
+            count(pl.id)::int AS staff_count
+       FROM ops.payroll_runs pr
+       LEFT JOIN ops.payroll_lines pl ON pl.run_id = pr.id
+      GROUP BY pr.id ORDER BY pr.period DESC`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    period: r.period as string,
+    status: r.status as string,
+    total: num(r.total),
+    staffCount: num(r.staff_count),
+    createdAt: new Date(r.created_at as string).toISOString(),
+  }));
+}

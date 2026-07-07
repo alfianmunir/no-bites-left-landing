@@ -57,3 +57,43 @@ export function formatPct(x: number): string {
   if (!Number.isFinite(x)) return "—";
   return (x * 100).toFixed(1).replace(".", ",") + "%";
 }
+
+// --- M5 payroll --------------------------------------------------------------
+
+export interface PayrollInputs {
+  attendanceDays: number; // logged work days in the period (drives daily pay)
+  qualifyingBatches: number; // period batches closed at yield ≥95% (drives bonus)
+  thrRate: number; // config thr_accrual_rate (0.0833 = 1/12)
+}
+
+export interface PayrollLine {
+  base: number;
+  batchIncentive: number;
+  deductions: number;
+  thrAccrual: number;
+  net: number;
+}
+
+/**
+ * One staff member's pay for a period (PRD §M5a). Monthly = flat rate; daily =
+ * rate × days worked; per_batch = rate × qualifying batches. A per-batch quality
+ * bonus (batch_bonus) is paid for each period batch that closed at yield ≥95%.
+ * THR (Lebaran bonus) accrues at 1/12 of the period's cash pay so it never
+ * ambushes cashflow — accrued here, disbursed later (not part of net cash-out).
+ */
+export function computePayrollLine(
+  staff: { payType: string; rate: number; batchBonus: number },
+  inp: PayrollInputs,
+): PayrollLine {
+  const base =
+    staff.payType === "monthly"
+      ? staff.rate
+      : staff.payType === "per_batch"
+        ? staff.rate * inp.qualifyingBatches
+        : staff.rate * inp.attendanceDays; // daily
+  const batchIncentive = staff.batchBonus > 0 ? staff.batchBonus * inp.qualifyingBatches : 0;
+  const deductions = 0; // BPJS etc. out of scope v1 (PRD §M5)
+  const thrAccrual = Math.round((base + batchIncentive) * inp.thrRate);
+  const net = base + batchIncentive - deductions;
+  return { base, batchIncentive, deductions, thrAccrual, net };
+}
