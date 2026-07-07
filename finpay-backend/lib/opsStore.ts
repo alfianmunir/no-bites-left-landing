@@ -18,6 +18,7 @@
  */
 import { env } from "./env";
 import { DEFAULT_PRICING_CONFIG, type PricingConfig } from "./opsPricing";
+import { assemblePnL, monthlyDepreciation, type PnL } from "./opsFinance";
 
 /** Ops screens need the real database — there is no file-store fallback. */
 export const opsEnabled = Boolean(env.databaseUrl);
@@ -620,11 +621,13 @@ export async function createSalesOrder(input: {
   try {
     await client.query("BEGIN");
     const ch = await client.query(
-      `SELECT name, settlement_lag_days FROM ops.channels WHERE id = $1 AND active`,
+      `SELECT name, fee_pct, fee_flat, settlement_lag_days FROM ops.channels WHERE id = $1 AND active`,
       [input.channelId],
     );
     if (!ch.rows[0]) throw new Error("channel not found or inactive");
     const channelName = ch.rows[0].name as string;
+    const feePct = num(ch.rows[0].fee_pct);
+    const feeFlat = num(ch.rows[0].fee_flat);
     const lagDays = num(ch.rows[0].settlement_lag_days);
 
     const so = await client.query(
@@ -654,6 +657,24 @@ export async function createSalesOrder(input: {
         [salesOrderId, number, input.orderedAt ? input.orderedAt.slice(0, 10) : null, lagDays, gross],
       );
       invoiceId = inv.rows[0].id as string;
+    }
+
+    // M4 cash auto-posting (PRD §M4 "money events auto-post"). Immediate-
+    // settlement channels post cash IN at order time; marketplaces land the
+    // net-of-commission amount in `marketplace_pending` until settlement.
+    // B2B has no cash yet (its invoice payment posts it — see setInvoiceStatus);
+    // website waits on the deferred PG-webhook trigger, so it's skipped here.
+    if (gross > 0 && channelName !== "b2b" && channelName !== "website") {
+      const isMarketplace = channelName === "gofood" || channelName === "grabfood" || channelName === "shopeefood";
+      const account = isMarketplace ? "marketplace_pending" : "bank";
+      const net = gross - (gross * feePct + feeFlat); // customer pays gross; platform keeps its commission
+      if (net > 0) {
+        await client.query(
+          `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+           VALUES ('in', $1, $2, $3, 'sales_order', $4, COALESCE($5::date, CURRENT_DATE), $6)`,
+          [net, account, `sales_${channelName}`, salesOrderId, input.orderedAt ? input.orderedAt.slice(0, 10) : null, input.customerRef?.trim() || null],
+        );
+      }
     }
 
     await client.query("COMMIT");
@@ -724,11 +745,439 @@ export async function listInvoices(): Promise<InvoiceRow[]> {
 }
 
 /** Update an invoice's AR status (draft/sent/paid/overdue/void). Invoice status
- *  is mutable AR state (not a ledger); the underlying sales_order is unchanged. */
+ *  is mutable AR state (not a ledger); the underlying sales_order is unchanged.
+ *  Marking an invoice `paid` is the B2B revenue trigger (PRD §F3) — it posts a
+ *  cash IN entry to `bank` once (idempotent on ref_type/ref_id), so re-marking
+ *  or a later un-pay never double-books the receipt. */
 export async function setInvoiceStatus(invoiceId: string, status: string): Promise<boolean> {
   const allowed = ["draft", "sent", "paid", "overdue", "void"];
   if (!allowed.includes(status)) throw new Error("invalid invoice status");
   const p = await pool();
-  const { rowCount } = await p.query(`UPDATE ops.invoices SET status = $2 WHERE id = $1`, [invoiceId, status]);
-  return (rowCount ?? 0) > 0;
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const { rowCount, rows } = await client.query(
+      `UPDATE ops.invoices SET status = $2 WHERE id = $1 RETURNING amount`,
+      [invoiceId, status],
+    );
+    if ((rowCount ?? 0) === 0) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    if (status === "paid") {
+      const amount = num(rows[0].amount);
+      if (amount > 0) {
+        await client.query(
+          `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, note)
+           SELECT 'in', $2, 'bank', 'sales_b2b', 'invoice', $1, 'B2B invoice paid'
+            WHERE NOT EXISTS (
+              SELECT 1 FROM ops.cash_entries WHERE ref_type = 'invoice' AND ref_id = $1 AND direction = 'in'
+            )`,
+          [invoiceId, amount],
+        );
+      }
+    }
+    await client.query("COMMIT");
+    return true;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+// --- M4 Finance (cash ledger, expenses, budgets, assets, P&L) ----------------
+
+export interface CashAccountBalance {
+  account: string;
+  balance: number;
+}
+
+export interface CashPosition {
+  accounts: CashAccountBalance[];
+  total: number;
+}
+
+export interface CashEntryRow {
+  id: string;
+  direction: "in" | "out";
+  amount: number;
+  account: string;
+  category: string;
+  refType: string | null;
+  note: string | null;
+  occurredAt: string;
+  balance: number; // running net over the returned rows, oldest→newest
+}
+
+export interface ExpenseCategoryRow {
+  id: string;
+  code: string;
+  name: string;
+  type: "opex" | "marketing" | "capex";
+  monthlyBudget: number | null;
+}
+
+export interface BudgetRow {
+  code: string;
+  name: string;
+  monthlyBudget: number;
+  spent: number;
+}
+
+export interface AssetRow {
+  id: string;
+  name: string;
+  category: string;
+  status: "planned" | "owned" | "disposed";
+  purchaseCost: number | null;
+  purchasedAt: string | null;
+  targetMonth: string | null;
+  usefulLifeMonths: number | null;
+  salvageValue: number;
+  monthlyDepreciation: number;
+}
+
+export interface PayablePurchaseRow {
+  id: string;
+  supplierName: string | null;
+  invoiceRef: string | null;
+  receivedAt: string | null;
+  dueDate: string | null;
+  total: number;
+}
+
+export interface CashEntryFilter {
+  month?: string | null; // "YYYY-MM"
+  direction?: "in" | "out" | null;
+  account?: string | null;
+}
+
+/** Live cash position per account (SUM of ins − outs). No stored balance ever —
+ *  the ledger is the single source of truth (PRD §3). */
+export async function getCashPosition(): Promise<CashPosition> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT account,
+            COALESCE(sum(CASE WHEN direction = 'in' THEN amount ELSE -amount END), 0) AS balance
+       FROM ops.cash_entries
+      GROUP BY account
+      ORDER BY account`,
+  );
+  const accounts = rows.map((r) => ({ account: r.account as string, balance: num(r.balance) }));
+  const total = accounts.reduce((s, a) => s + a.balance, 0);
+  return { accounts, total };
+}
+
+/** Cash ledger, filtered + limited, newest first, each row carrying a running
+ *  net balance computed over the returned set (oldest→newest). */
+export async function listCashEntries(filter: CashEntryFilter = {}, limit = 200): Promise<CashEntryRow[]> {
+  const p = await pool();
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (filter.month) {
+    params.push(filter.month + "-01");
+    where.push(`occurred_at >= $${params.length}::date AND occurred_at < ($${params.length}::date + interval '1 month')`);
+  }
+  if (filter.direction === "in" || filter.direction === "out") {
+    params.push(filter.direction);
+    where.push(`direction = $${params.length}`);
+  }
+  if (filter.account) {
+    params.push(filter.account);
+    where.push(`account = $${params.length}`);
+  }
+  params.push(limit);
+  const { rows } = await p.query(
+    `SELECT id, direction, amount, account, category, ref_type, note, occurred_at
+       FROM ops.cash_entries
+       ${where.length ? "WHERE " + where.join(" AND ") : ""}
+      ORDER BY occurred_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  // Running balance: fold oldest→newest, then present newest-first.
+  let bal = 0;
+  const ascending = [...rows].reverse().map((r) => {
+    const amount = num(r.amount);
+    bal += (r.direction as string) === "in" ? amount : -amount;
+    return {
+      id: String(r.id),
+      direction: r.direction as "in" | "out",
+      amount,
+      account: r.account as string,
+      category: r.category as string,
+      refType: (r.ref_type as string) ?? null,
+      note: (r.note as string) ?? null,
+      occurredAt: r.occurred_at as string,
+      balance: bal,
+    };
+  });
+  return ascending.reverse();
+}
+
+export async function listExpenseCategories(): Promise<ExpenseCategoryRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT id, code, name, type, monthly_budget FROM ops.expense_categories ORDER BY type, code`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    code: r.code as string,
+    name: r.name as string,
+    type: r.type as "opex" | "marketing" | "capex",
+    monthlyBudget: r.monthly_budget == null ? null : num(r.monthly_budget),
+  }));
+}
+
+/** Marketing tags with month-to-date spend vs monthly budget (PRD §M4b). */
+export async function listBudgetVsSpend(month: string): Promise<BudgetRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT ec.code, ec.name, ec.monthly_budget,
+            COALESCE(sum(e.amount), 0) AS spent
+       FROM ops.expense_categories ec
+       LEFT JOIN ops.expenses e
+         ON e.category_id = ec.id
+        AND e.occurred_at >= $1::date
+        AND e.occurred_at < ($1::date + interval '1 month')
+      WHERE ec.type = 'marketing' AND ec.monthly_budget IS NOT NULL
+      GROUP BY ec.code, ec.name, ec.monthly_budget
+      ORDER BY ec.code`,
+    [month + "-01"],
+  );
+  return rows.map((r) => ({
+    code: r.code as string,
+    name: r.name as string,
+    monthlyBudget: num(r.monthly_budget),
+    spent: num(r.spent),
+  }));
+}
+
+export async function listAssets(): Promise<AssetRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT id, name, category, status, purchase_cost, purchased_at, target_month,
+            useful_life_months, salvage_value
+       FROM ops.assets
+      ORDER BY (status = 'owned') DESC, (status = 'planned') DESC, name`,
+  );
+  return rows.map((r) => {
+    const purchaseCost = r.purchase_cost == null ? null : num(r.purchase_cost);
+    const usefulLifeMonths = r.useful_life_months == null ? null : num(r.useful_life_months);
+    const salvageValue = num(r.salvage_value);
+    const status = r.status as "planned" | "owned" | "disposed";
+    return {
+      id: r.id as string,
+      name: r.name as string,
+      category: r.category as string,
+      status,
+      purchaseCost,
+      purchasedAt: (r.purchased_at as string) ?? null,
+      targetMonth: (r.target_month as string) ?? null,
+      usefulLifeMonths,
+      salvageValue,
+      monthlyDepreciation: monthlyDepreciation({ status, purchaseCost, salvageValue, usefulLifeMonths }),
+    };
+  });
+}
+
+/** Received-but-unpaid purchases — the AP list (F1 "invoice due date lands in
+ *  AP"). Total is summed from lines (never a stored total). */
+export async function listPayablePurchases(): Promise<PayablePurchaseRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pu.id, s.name AS supplier_name, pu.invoice_ref, pu.received_at, pu.due_date,
+            COALESCE(sum(pl.qty * pl.unit_cost), 0) AS total
+       FROM ops.purchases pu
+       LEFT JOIN ops.suppliers s ON s.id = pu.supplier_id
+       LEFT JOIN ops.purchase_lines pl ON pl.purchase_id = pu.id
+      WHERE pu.status = 'received'
+      GROUP BY pu.id, s.name, pu.invoice_ref, pu.received_at, pu.due_date
+      ORDER BY pu.received_at ASC NULLS LAST`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    supplierName: (r.supplier_name as string) ?? null,
+    invoiceRef: (r.invoice_ref as string) ?? null,
+    receivedAt: (r.received_at as string) ?? null,
+    dueDate: (r.due_date as string) ?? null,
+    total: num(r.total),
+  }));
+}
+
+/** Accrual P&L for a date range: revenue (net of channel fees) − COGS = gross
+ *  profit; − opex − marketing − depreciation = operating profit. Every figure
+ *  is summed from ledger/line rows; nothing is a stored total (PRD §M4). */
+export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
+  const p = await pool();
+  // Revenue + COGS from sales (per-order fee so the flat fee counts once/order).
+  const salesQ = p.query(
+    `SELECT COALESCE(sum(o.gross), 0) AS gross,
+            COALESCE(sum(o.gross * o.fee_pct + CASE WHEN o.gross > 0 THEN o.fee_flat ELSE 0 END), 0) AS fee,
+            COALESCE(sum(o.cogs), 0) AS cogs
+       FROM (
+         SELECT so.id, c.fee_pct, c.fee_flat,
+                sum(sl.unit_price * sl.qty) AS gross,
+                sum(COALESCE(sl.unit_cogs, 0) * sl.qty) AS cogs
+           FROM ops.sales_orders so
+           JOIN ops.channels c ON c.id = so.channel_id
+           JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
+          WHERE so.ordered_at >= $1::date AND so.ordered_at < ($2::date + 1)
+          GROUP BY so.id, c.fee_pct, c.fee_flat
+       ) o`,
+    [startISO, endISO],
+  );
+  // Opex + marketing from expenses (capex never hits P&L — it depreciates).
+  const expQ = p.query(
+    `SELECT ec.type, COALESCE(sum(e.amount), 0) AS amount
+       FROM ops.expenses e
+       JOIN ops.expense_categories ec ON ec.id = e.category_id
+      WHERE e.occurred_at BETWEEN $1::date AND $2::date
+      GROUP BY ec.type`,
+    [startISO, endISO],
+  );
+  const [sales, exp] = await Promise.all([salesQ, expQ]);
+  const s = sales.rows[0];
+  const revenue = num(s.gross) - num(s.fee);
+  const cogs = num(s.cogs);
+  let opex = 0;
+  let marketing = 0;
+  for (const r of exp.rows) {
+    if (r.type === "opex") opex = num(r.amount);
+    else if (r.type === "marketing") marketing = num(r.amount);
+  }
+  // Depreciation of owned assets (straight-line monthly) is a P&L cost.
+  const assets = await listAssets();
+  const depreciation = assets.reduce((sum, a) => sum + a.monthlyDepreciation, 0);
+  return assemblePnL({ revenue, cogs, opex, marketing, depreciation });
+}
+
+// --- M4 writes (append cash movements alongside the source row) --------------
+
+/** Record an expense + its paired cash-out entry in one transaction (HANDOFF
+ *  §1.5). The cash entry is tagged with the category code so cash and P&L
+ *  reconcile by category. */
+export async function createExpense(input: {
+  categoryId: string;
+  amount: number;
+  vendor: string | null;
+  note: string | null;
+  campaignRef: string | null;
+  occurredAt: string | null;
+  recurring: boolean;
+  account: string;
+}): Promise<{ expenseId: string }> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const cat = await client.query(`SELECT code FROM ops.expense_categories WHERE id = $1`, [input.categoryId]);
+    if (!cat.rows[0]) throw new Error("category not found");
+    const code = cat.rows[0].code as string;
+
+    const ex = await client.query(
+      `INSERT INTO ops.expenses (category_id, amount, vendor, note, campaign_ref, occurred_at, recurring)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6::date, CURRENT_DATE), $7) RETURNING id, occurred_at`,
+      [input.categoryId, input.amount, input.vendor?.trim() || null, input.note?.trim() || null, input.campaignRef?.trim() || null, input.occurredAt || null, input.recurring],
+    );
+    const expenseId = ex.rows[0].id as string;
+
+    await client.query(
+      `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+       VALUES ('out', $1, $2, $3, 'expense', $4, $5, $6)`,
+      [input.amount, input.account, code, expenseId, ex.rows[0].occurred_at, input.vendor?.trim() || input.note?.trim() || null],
+    );
+
+    await client.query("COMMIT");
+    return { expenseId };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Mark a received purchase paid → posts the ingredient cash-out (F1/HANDOFF
+ *  §1.5). Guarded on status='received' so it can't double-post; the purchase
+ *  total is recomputed from its lines, never trusted from input. */
+export async function markPurchasePaid(purchaseId: string, account: string): Promise<{ total: number } | null> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const upd = await client.query(
+      `UPDATE ops.purchases SET status = 'paid' WHERE id = $1 AND status = 'received' RETURNING id`,
+      [purchaseId],
+    );
+    if ((upd.rowCount ?? 0) === 0) {
+      await client.query("ROLLBACK");
+      return null; // not found or already paid
+    }
+    const tot = await client.query(
+      `SELECT COALESCE(sum(qty * unit_cost), 0) AS total FROM ops.purchase_lines WHERE purchase_id = $1`,
+      [purchaseId],
+    );
+    const total = num(tot.rows[0].total);
+    if (total > 0) {
+      await client.query(
+        `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, note)
+         VALUES ('out', $1, $2, 'ingredients', 'purchase', $3, 'Purchase paid')`,
+        [total, account, purchaseId],
+      );
+    }
+    await client.query("COMMIT");
+    return { total };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Mark a planned asset as owned → records the purchase + posts the capex
+ *  cash-out (PRD §M4a: capex hits cash immediately, then depreciates monthly).
+ *  Guarded on status='planned' so the cash-out posts once. */
+export async function markAssetOwned(input: {
+  assetId: string;
+  purchaseCost: number | null;
+  purchasedAt: string | null;
+  account: string;
+}): Promise<{ cost: number } | null> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const upd = await client.query(
+      `UPDATE ops.assets
+          SET status = 'owned',
+              purchase_cost = COALESCE($2, purchase_cost),
+              purchased_at = COALESCE($3::date, CURRENT_DATE)
+        WHERE id = $1 AND status = 'planned'
+        RETURNING purchase_cost, purchased_at`,
+      [input.assetId, input.purchaseCost, input.purchasedAt || null],
+    );
+    if ((upd.rowCount ?? 0) === 0) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const cost = num(upd.rows[0].purchase_cost);
+    if (cost > 0) {
+      await client.query(
+        `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+         VALUES ('out', $1, $2, 'capex', 'asset', $3, $4, 'Capex purchase')`,
+        [cost, input.account, input.assetId, upd.rows[0].purchased_at],
+      );
+    }
+    await client.query("COMMIT");
+    return { cost };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
