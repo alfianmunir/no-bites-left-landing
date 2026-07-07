@@ -1397,6 +1397,133 @@ export async function runPayroll(period: string): Promise<{ runId: string; total
   }
 }
 
+// --- M6 Projections (read-only views over the ledgers) -----------------------
+
+export interface DemandRow {
+  sku: string;
+  name: string;
+  units: number;
+  revenue: number;
+}
+
+export interface PurchasePlanRow {
+  name: string;
+  unit: string;
+  need: number;
+  onHand: number;
+  short: number;
+}
+
+export interface CashWeek {
+  weekStart: string;
+  inflow: number;
+  outflow: number;
+  net: number;
+  balance: number;
+}
+
+/** Units + revenue sold per SKU over the trailing N days (demand velocity). */
+export async function getDemandVelocity(days = 28): Promise<DemandRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pr.sku, pr.name,
+            COALESCE(sum(sl.qty), 0) AS units,
+            COALESCE(sum(sl.qty * sl.unit_price), 0) AS revenue
+       FROM ops.products pr
+       LEFT JOIN ops.sales_lines sl ON sl.product_id = pr.id
+       LEFT JOIN ops.sales_orders so ON so.id = sl.sales_order_id
+            AND so.ordered_at >= (now() - ($1 || ' days')::interval)
+            AND so.status <> 'cancelled'
+      WHERE pr.active
+      GROUP BY pr.sku, pr.name
+      ORDER BY units DESC, pr.sku`,
+    [String(days)],
+  );
+  return rows.map((r) => ({ sku: r.sku as string, name: r.name as string, units: num(r.units), revenue: num(r.revenue) }));
+}
+
+/** MRP-lite: ingredients needed to bake one standard batch of every active
+ *  recipe, minus current stock → the suggested shopping list. */
+export async function getPurchasePlan(): Promise<PurchasePlanRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT i.name, i.unit,
+            round(sum(rl.qty_per_batch), 4) AS need,
+            COALESCE(b.qty_on_hand, 0) AS on_hand
+       FROM ops.recipe_lines rl
+       JOIN ops.recipes r ON r.id = rl.recipe_id AND r.active
+       JOIN ops.items i ON i.id = rl.item_id
+       LEFT JOIN ops.v_stock_balance b ON b.item_id = i.id
+      GROUP BY i.id, i.name, i.unit, b.qty_on_hand
+      ORDER BY (COALESCE(b.qty_on_hand,0) < sum(rl.qty_per_batch)) DESC, i.name`,
+  );
+  return rows.map((r) => {
+    const need = num(r.need);
+    const onHand = num(r.on_hand);
+    return { name: r.name as string, unit: r.unit as string, need, onHand, short: Math.max(0, need - onHand) };
+  });
+}
+
+/** Estimated monthly payroll (last run if any, else active-staff run-rate). */
+async function estimatedMonthlyPayroll(): Promise<number> {
+  const p = await pool();
+  const last = await p.query(`SELECT total FROM ops.payroll_runs ORDER BY period DESC LIMIT 1`);
+  if (last.rows[0]) return num(last.rows[0].total);
+  const staff = await listStaff();
+  return staff
+    .filter((s) => s.active)
+    .reduce((sum, s) => sum + (s.payType === "monthly" ? s.rate : s.payType === "per_batch" ? s.rate * 5 : s.rate * 9), 0);
+}
+
+/**
+ * 13-week cash projection (PRD §M6). Starts at the current cash position and
+ * layers weekly outflows (recurring expenses + payroll run-rate, spread evenly)
+ * and inflows (unpaid B2B invoices on their due date, planned capex on its
+ * target month). A rough but honest forward look — flags weeks that go negative.
+ */
+export async function get13WeekCash(): Promise<{ startBalance: number; weeks: CashWeek[] }> {
+  const p = await pool();
+  const [pos, recurring, payroll, inv, assets] = await Promise.all([
+    getCashPosition(),
+    p.query(`SELECT COALESCE(sum(amount), 0) AS m FROM ops.expenses WHERE recurring`),
+    estimatedMonthlyPayroll(),
+    p.query(`SELECT due_date, amount FROM ops.invoices WHERE status NOT IN ('paid','void') AND due_date IS NOT NULL`),
+    p.query(`SELECT target_month, purchase_cost FROM ops.assets WHERE status = 'planned' AND target_month IS NOT NULL AND purchase_cost IS NOT NULL`),
+  ]);
+  const recurringMonthly = num(recurring.rows[0].m);
+  const weeklyOut = (recurringMonthly + payroll) / (52 / 12); // monthly → weekly
+
+  // Monday of the current week (UTC).
+  const now = new Date();
+  const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+
+  const weeks: CashWeek[] = [];
+  let balance = pos.total;
+  for (let i = 0; i < 13; i++) {
+    const wStart = new Date(monday);
+    wStart.setUTCDate(wStart.getUTCDate() + i * 7);
+    const wEnd = new Date(wStart);
+    wEnd.setUTCDate(wEnd.getUTCDate() + 7);
+    const inWeek = (iso: string | null) => {
+      if (!iso) return false;
+      const d = new Date(iso + "T00:00:00Z").getTime();
+      return d >= wStart.getTime() && d < wEnd.getTime();
+    };
+    let inflow = 0;
+    for (const r of inv.rows) if (inWeek(r.due_date as string)) inflow += num(r.amount);
+    let outflow = weeklyOut;
+    for (const a of assets.rows) {
+      const tm = (a.target_month as string)?.slice(0, 7);
+      if (tm && `${wStart.toISOString().slice(0, 7)}` === tm && wStart.getUTCDate() <= 7) outflow += num(a.purchase_cost);
+    }
+    const net = inflow - outflow;
+    balance += net;
+    weeks.push({ weekStart: wStart.toISOString().slice(0, 10), inflow, outflow, net, balance });
+  }
+  return { startBalance: pos.total, weeks };
+}
+
 export async function listPayrollRuns(): Promise<PayrollRunRow[]> {
   const p = await pool();
   const { rows } = await p.query(

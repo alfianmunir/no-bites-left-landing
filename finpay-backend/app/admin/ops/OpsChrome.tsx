@@ -14,6 +14,7 @@ export function qty(n: number): string {
 }
 
 const TABS: Array<{ href: string; label: string }> = [
+  { href: "/admin/ops/today", label: "Today" },
   { href: "/admin/ops/stock", label: "Stock" },
   { href: "/admin/ops/receive", label: "Receive" },
   { href: "/admin/ops/production", label: "Production" },
@@ -23,6 +24,7 @@ const TABS: Array<{ href: string; label: string }> = [
   { href: "/admin/ops/opname", label: "Opname" },
   { href: "/admin/ops/waste", label: "Waste" },
   { href: "/admin/ops/pricing", label: "Pricing" },
+  { href: "/admin/ops/forecast", label: "Forecast" },
 ];
 
 export function OpsShell({
