@@ -16,7 +16,9 @@ export function qty(n: number): string {
 const TABS: Array<{ href: string; label: string }> = [
   { href: "/admin/ops/today", label: "Today" },
   { href: "/admin/ops/stock", label: "Stock" },
+  { href: "/admin/ops/items", label: "Items" },
   { href: "/admin/ops/receive", label: "Receive" },
+  { href: "/admin/ops/recipes", label: "Recipes" },
   { href: "/admin/ops/production", label: "Production" },
   { href: "/admin/ops/orders", label: "Orders" },
   { href: "/admin/ops/money", label: "Money" },

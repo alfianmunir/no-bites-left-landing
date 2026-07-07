@@ -1542,3 +1542,257 @@ export async function listPayrollRuns(): Promise<PayrollRunRow[]> {
     createdAt: new Date(r.created_at as string).toISOString(),
   }));
 }
+
+// --- Item master CRUD (goods = ingredient, + packaging) ----------------------
+
+export interface ItemDetailRow {
+  id: string;
+  name: string;
+  type: "ingredient" | "packaging";
+  unit: string;
+  reorderPoint: number | null;
+  avgCost: number;
+  onHand: number;
+  active: boolean;
+}
+
+/** All active items with live on-hand (from v_stock_balance). */
+export async function listItemsWithStock(): Promise<ItemDetailRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT i.id, i.name, i.type, i.unit, i.reorder_point, i.avg_cost, i.active,
+            COALESCE(b.qty_on_hand, 0) AS on_hand
+       FROM ops.items i
+       LEFT JOIN ops.v_stock_balance b ON b.item_id = i.id
+      WHERE i.active
+      ORDER BY i.type, i.name`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    type: r.type as "ingredient" | "packaging",
+    unit: r.unit as string,
+    reorderPoint: r.reorder_point == null ? null : num(r.reorder_point),
+    avgCost: num(r.avg_cost),
+    onHand: num(r.on_hand),
+    active: Boolean(r.active),
+  }));
+}
+
+export async function createItem(input: { name: string; type: string; unit: string; reorderPoint: number | null }): Promise<string> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `INSERT INTO ops.items (name, type, unit, reorder_point) VALUES ($1, $2, $3, $4) RETURNING id`,
+    [input.name.trim(), input.type, input.unit.trim(), input.reorderPoint],
+  );
+  return rows[0].id as string;
+}
+
+export async function updateItem(id: string, input: { name: string; unit: string; reorderPoint: number | null }): Promise<boolean> {
+  const p = await pool();
+  const { rowCount } = await p.query(
+    `UPDATE ops.items SET name = $2, unit = $3, reorder_point = $4 WHERE id = $1`,
+    [id, input.name.trim(), input.unit.trim(), input.reorderPoint],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Deactivate an item (soft delete) — hard-delete only if it never moved stock. */
+export async function deleteOrDeactivateItem(id: string): Promise<"deleted" | "deactivated" | "notfound"> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const used = await client.query(`SELECT 1 FROM ops.stock_moves WHERE item_id = $1 LIMIT 1`, [id]);
+    const inRecipe = await client.query(`SELECT 1 FROM ops.recipe_lines WHERE item_id = $1 LIMIT 1`, [id]);
+    let outcome: "deleted" | "deactivated" | "notfound";
+    if ((used.rowCount ?? 0) === 0 && (inRecipe.rowCount ?? 0) === 0) {
+      const del = await client.query(`DELETE FROM ops.items WHERE id = $1`, [id]);
+      outcome = (del.rowCount ?? 0) > 0 ? "deleted" : "notfound";
+    } else {
+      const upd = await client.query(`UPDATE ops.items SET active = false WHERE id = $1`, [id]);
+      outcome = (upd.rowCount ?? 0) > 0 ? "deactivated" : "notfound";
+    }
+    await client.query("COMMIT");
+    return outcome;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Outbound packaging (bundle packing etc.) — deducts stock FEFO at avg cost via
+ *  consume_fefo, tagged ref_type 'packaging_out' so it stays out of batch costs
+ *  and waste reports. Returns the cost written out. */
+export async function packagingOut(itemId: string, qty: number, note: string | null): Promise<number> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT ops.consume_fefo($1, $2, 'production_consume', 'packaging_out', NULL, $3) AS cost`,
+    [itemId, qty, note || null],
+  );
+  return num(rows[0].cost);
+}
+
+// --- Recipe CRUD (adjustable BOM) --------------------------------------------
+
+export interface RecipeLineRow {
+  id: string;
+  itemId: string;
+  name: string;
+  unit: string;
+  type: "ingredient" | "packaging";
+  qtyPerBatch: number;
+}
+
+export interface ProductRecipeRow {
+  productId: string;
+  sku: string;
+  name: string;
+  recipeId: string | null;
+  batchYieldQty: number | null;
+  hasBatches: boolean;
+  lines: RecipeLineRow[];
+}
+
+/** Every active product with its recipe + BOM lines (split by item type in UI). */
+export async function listProductRecipes(): Promise<ProductRecipeRow[]> {
+  const p = await pool();
+  const products = await p.query(
+    `SELECT pr.id AS product_id, pr.sku, pr.name, r.id AS recipe_id, r.batch_yield_qty,
+            EXISTS (SELECT 1 FROM ops.production_batches pb WHERE pb.recipe_id = r.id) AS has_batches
+       FROM ops.products pr
+       LEFT JOIN ops.recipes r ON r.product_id = pr.id AND r.active
+      WHERE pr.active
+      ORDER BY pr.is_bundle, pr.sku`,
+  );
+  const lines = await p.query(
+    `SELECT rl.id, rl.recipe_id, rl.item_id, rl.qty_per_batch, i.name, i.unit, i.type
+       FROM ops.recipe_lines rl JOIN ops.items i ON i.id = rl.item_id
+      ORDER BY i.type, i.name`,
+  );
+  const byRecipe = new Map<string, RecipeLineRow[]>();
+  for (const l of lines.rows) {
+    const arr = byRecipe.get(l.recipe_id as string) ?? [];
+    arr.push({
+      id: l.id as string,
+      itemId: l.item_id as string,
+      name: l.name as string,
+      unit: l.unit as string,
+      type: l.type as "ingredient" | "packaging",
+      qtyPerBatch: num(l.qty_per_batch),
+    });
+    byRecipe.set(l.recipe_id as string, arr);
+  }
+  return products.rows.map((r) => ({
+    productId: r.product_id as string,
+    sku: r.sku as string,
+    name: r.name as string,
+    recipeId: (r.recipe_id as string) ?? null,
+    batchYieldQty: r.batch_yield_qty == null ? null : num(r.batch_yield_qty),
+    hasBatches: Boolean(r.has_batches),
+    lines: r.recipe_id ? byRecipe.get(r.recipe_id as string) ?? [] : [],
+  }));
+}
+
+export async function createRecipe(productId: string, batchYieldQty: number): Promise<string> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `INSERT INTO ops.recipes (product_id, batch_yield_qty) VALUES ($1, $2) RETURNING id`,
+    [productId, batchYieldQty],
+  );
+  return rows[0].id as string;
+}
+
+export async function updateRecipeYield(recipeId: string, batchYieldQty: number): Promise<boolean> {
+  const p = await pool();
+  const { rowCount } = await p.query(`UPDATE ops.recipes SET batch_yield_qty = $2 WHERE id = $1`, [recipeId, batchYieldQty]);
+  return (rowCount ?? 0) > 0;
+}
+
+export async function addRecipeLine(recipeId: string, itemId: string, qtyPerBatch: number): Promise<string> {
+  const p = await pool();
+  // If the item is already in the recipe, update its qty instead of duplicating.
+  const existing = await p.query(`SELECT id FROM ops.recipe_lines WHERE recipe_id = $1 AND item_id = $2`, [recipeId, itemId]);
+  if (existing.rows[0]) {
+    await p.query(`UPDATE ops.recipe_lines SET qty_per_batch = $2 WHERE id = $1`, [existing.rows[0].id, qtyPerBatch]);
+    return existing.rows[0].id as string;
+  }
+  const { rows } = await p.query(
+    `INSERT INTO ops.recipe_lines (recipe_id, item_id, qty_per_batch) VALUES ($1, $2, $3) RETURNING id`,
+    [recipeId, itemId, qtyPerBatch],
+  );
+  return rows[0].id as string;
+}
+
+export async function updateRecipeLine(lineId: string, qtyPerBatch: number): Promise<boolean> {
+  const p = await pool();
+  const { rowCount } = await p.query(`UPDATE ops.recipe_lines SET qty_per_batch = $2 WHERE id = $1`, [lineId, qtyPerBatch]);
+  return (rowCount ?? 0) > 0;
+}
+
+export async function deleteRecipeLine(lineId: string): Promise<boolean> {
+  const p = await pool();
+  const { rowCount } = await p.query(`DELETE FROM ops.recipe_lines WHERE id = $1`, [lineId]);
+  return (rowCount ?? 0) > 0;
+}
+
+/** Remove a recipe — hard-delete (with lines) if it has no batch history, else
+ *  deactivate so past batch costs stay reproducible (ledger-safe). */
+export async function deleteOrDeactivateRecipe(recipeId: string): Promise<"deleted" | "deactivated" | "notfound"> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const used = await client.query(`SELECT 1 FROM ops.production_batches WHERE recipe_id = $1 LIMIT 1`, [recipeId]);
+    let outcome: "deleted" | "deactivated" | "notfound";
+    if ((used.rowCount ?? 0) === 0) {
+      await client.query(`DELETE FROM ops.recipe_lines WHERE recipe_id = $1`, [recipeId]);
+      const del = await client.query(`DELETE FROM ops.recipes WHERE id = $1`, [recipeId]);
+      outcome = (del.rowCount ?? 0) > 0 ? "deleted" : "notfound";
+    } else {
+      const upd = await client.query(`UPDATE ops.recipes SET active = false WHERE id = $1`, [recipeId]);
+      outcome = (upd.rowCount ?? 0) > 0 ? "deactivated" : "notfound";
+    }
+    await client.query("COMMIT");
+    return outcome;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Cancel an in-progress batch: restore consumed stock with correcting entries
+ *  (append-only — never deletes ledger rows) and mark it cancelled. */
+export async function cancelBatch(batchId: string): Promise<boolean> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const b = await client.query(`SELECT status FROM ops.production_batches WHERE id = $1`, [batchId]);
+    if (!b.rows[0]) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    if (b.rows[0].status !== "in_progress") throw new Error("only in-progress batches can be cancelled");
+    // Reverse each consume with an opposite move (append-only correction).
+    await client.query(
+      `INSERT INTO ops.stock_moves (item_id, qty, reason, ref_type, ref_id, unit_cost, note)
+       SELECT item_id, -qty, 'opname_adj', 'batch_cancel', $1, unit_cost, 'Batch cancelled — consumption reversed'
+         FROM ops.stock_moves
+        WHERE ref_type = 'production_batch' AND ref_id = $1 AND reason = 'production_consume'`,
+      [batchId],
+    );
+    await client.query(`UPDATE ops.production_batches SET status = 'cancelled' WHERE id = $1`, [batchId]);
+    await client.query("COMMIT");
+    return true;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}

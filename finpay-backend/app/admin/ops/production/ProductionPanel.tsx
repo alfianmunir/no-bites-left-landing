@@ -194,6 +194,26 @@ function CloseBatch({ batch }: { batch: OpenBatchRow }) {
     }
   };
 
+  const cancel = async () => {
+    if (!confirm(`Cancel this ${batch.name} batch? Consumed stock will be restored.`)) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/ops/batch/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId: batch.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) setError(data.error ?? "Could not cancel the batch.");
+      else router.refresh();
+    } catch {
+      setError("Request failed — check your connection.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={{ border: "1.5px solid var(--line)", borderRadius: 12, padding: 12, background: "var(--surface2)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -202,9 +222,14 @@ function CloseBatch({ batch }: { batch: OpenBatchRow }) {
           <span style={{ color: "var(--soft)", fontSize: 12.5 }}> · {batch.sku} · planned {qtyFmt(batch.plannedQty)}{batch.disposition === "sample" ? " · sample" : ""}</span>
         </div>
         {!open && (
-          <button onClick={() => setOpen(true)} style={{ padding: "7px 14px", borderRadius: 10, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>
-            Close batch
-          </button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => setOpen(true)} style={{ padding: "7px 14px", borderRadius: 10, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>
+              Close batch
+            </button>
+            <button onClick={cancel} disabled={busy} style={{ padding: "7px 12px", borderRadius: 10, border: "1.5px solid var(--line)", background: "#fff", color: "var(--red)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>
+              Cancel
+            </button>
+          </div>
         )}
       </div>
 
