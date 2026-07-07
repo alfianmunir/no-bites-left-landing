@@ -17,6 +17,7 @@
  * Server-only module.
  */
 import { env } from "./env";
+import { DEFAULT_PRICING_CONFIG, type PricingConfig } from "./opsPricing";
 
 /** Ops screens need the real database — there is no file-store fallback. */
 export const opsEnabled = Boolean(env.databaseUrl);
@@ -75,6 +76,15 @@ export interface ProductRow {
 export interface SupplierRow {
   id: string;
   name: string;
+}
+
+export interface PricingProductRow {
+  id: string;
+  sku: string;
+  name: string;
+  isBundle: boolean;
+  stdCost: number;
+  listPrice: number;
 }
 
 export interface ReceiveLineInput {
@@ -219,6 +229,62 @@ export async function listSuppliers(): Promise<SupplierRow[]> {
   const p = await pool();
   const { rows } = await p.query(`SELECT id, name FROM ops.suppliers ORDER BY name`);
   return rows.map((r) => ({ id: r.id as string, name: r.name as string }));
+}
+
+/** Pricing config from ops.config (jsonb key/value); falls back to the seeded
+ *  defaults for any key not yet present. */
+export async function getPricingConfig(): Promise<PricingConfig> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT key, value FROM ops.config WHERE key = ANY($1::text[])`,
+    [["waste_rate", "margin_floor", "bundle_margin_floor", "b2b_margin"]],
+  );
+  const map = new Map<string, number>();
+  for (const r of rows) map.set(r.key as string, Number(r.value));
+  return {
+    wasteRate: map.get("waste_rate") ?? DEFAULT_PRICING_CONFIG.wasteRate,
+    marginFloor: map.get("margin_floor") ?? DEFAULT_PRICING_CONFIG.marginFloor,
+    bundleMarginFloor: map.get("bundle_margin_floor") ?? DEFAULT_PRICING_CONFIG.bundleMarginFloor,
+    b2bMargin: map.get("b2b_margin") ?? DEFAULT_PRICING_CONFIG.b2bMargin,
+  };
+}
+
+/** Products with the cost + price inputs the margin math needs. std_cost is the
+ *  ledger-derived cost (moving-average receipts + batch costing keep it live). */
+export async function listPricingProducts(): Promise<PricingProductRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT id, sku, name, is_bundle, std_cost, list_price FROM ops.products WHERE active ORDER BY is_bundle, sku`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    sku: r.sku as string,
+    name: r.name as string,
+    isBundle: Boolean(r.is_bundle),
+    stdCost: num(r.std_cost),
+    listPrice: num(r.list_price),
+  }));
+}
+
+/** Persist a new list price for a product (the actual "price adjustment").
+ *  Margins recompute from this on next read — no stored margin to drift. */
+export async function updateProductPrice(productId: string, listPrice: number): Promise<PricingProductRow | null> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `UPDATE ops.products SET list_price = $2 WHERE id = $1 AND active
+       RETURNING id, sku, name, is_bundle, std_cost, list_price`,
+    [productId, listPrice],
+  );
+  if (!rows[0]) return null;
+  const r = rows[0];
+  return {
+    id: r.id as string,
+    sku: r.sku as string,
+    name: r.name as string,
+    isBundle: Boolean(r.is_bundle),
+    stdCost: num(r.std_cost),
+    listPrice: num(r.list_price),
+  };
 }
 
 // --- Writes (all go through the append-only RPCs) ----------------------------
