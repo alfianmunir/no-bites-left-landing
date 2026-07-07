@@ -125,6 +125,48 @@ export interface BatchHistoryRow {
   laborCost: number;
 }
 
+export interface ChannelRow {
+  id: string;
+  name: string;
+  feePct: number;
+  feeFlat: number;
+  settlementLagDays: number;
+  priceMultiplier: number;
+}
+
+export interface SalesLineInput {
+  productId: string;
+  qty: number;
+  unitPrice: number;
+}
+
+export interface SalesOrderRow {
+  id: string;
+  channel: string;
+  customerRef: string | null;
+  status: string;
+  orderedAt: string;
+  gross: number;
+  cogs: number;
+  feePct: number;
+  feeFlat: number;
+  units: number;
+  invoiceStatus: string | null;
+  invoiceDueDate: string | null;
+}
+
+export interface InvoiceRow {
+  id: string;
+  number: string | null;
+  salesOrderId: string;
+  channel: string;
+  customerRef: string | null;
+  issuedAt: string;
+  dueDate: string | null;
+  status: string;
+  amount: number;
+}
+
 export interface ReceiveLineInput {
   itemId: string;
   qty: number;
@@ -540,4 +582,153 @@ export async function closeBatch(
   const p = await pool();
   const { rows } = await p.query(`SELECT ops.close_batch($1, $2, $3, $4) AS cpu`, [batchId, actualYield, laborMinutes, laborCost]);
   return num(rows[0].cpu);
+}
+
+// --- M3 OMS (channel unification) --------------------------------------------
+
+export async function listChannels(): Promise<ChannelRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT id, name, fee_pct, fee_flat, settlement_lag_days, price_multiplier
+       FROM ops.channels WHERE active ORDER BY (name='direct') DESC, (name='b2b') DESC, name`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    feePct: num(r.fee_pct),
+    feeFlat: num(r.fee_flat),
+    settlementLagDays: num(r.settlement_lag_days),
+    priceMultiplier: num(r.price_multiplier),
+  }));
+}
+
+/**
+ * Record a manual channel order (WA/Direct/GoFood/B2B). One transaction:
+ * sales_orders + sales_lines (each snapshotting the product's current std_cost
+ * as unit_cogs, so margin is frozen at sale time). For a B2B channel an invoice
+ * is raised (due = ordered + settlement_lag_days) for AR aging.
+ */
+export async function createSalesOrder(input: {
+  channelId: string;
+  customerRef: string | null;
+  orderedAt: string | null;
+  source: string | null;
+  lines: SalesLineInput[];
+}): Promise<{ salesOrderId: string; invoiceId: string | null }> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const ch = await client.query(
+      `SELECT name, settlement_lag_days FROM ops.channels WHERE id = $1 AND active`,
+      [input.channelId],
+    );
+    if (!ch.rows[0]) throw new Error("channel not found or inactive");
+    const channelName = ch.rows[0].name as string;
+    const lagDays = num(ch.rows[0].settlement_lag_days);
+
+    const so = await client.query(
+      `INSERT INTO ops.sales_orders (channel_id, customer_ref, source_order_id, ordered_at)
+       VALUES ($1, $2, $3, COALESCE($4::timestamptz, now())) RETURNING id`,
+      [input.channelId, input.customerRef?.trim() || null, input.source?.trim() || null, input.orderedAt || null],
+    );
+    const salesOrderId = so.rows[0].id as string;
+
+    let gross = 0;
+    for (const l of input.lines) {
+      // Snapshot unit_cogs from the product's live std_cost at sale time.
+      await client.query(
+        `INSERT INTO ops.sales_lines (sales_order_id, product_id, qty, unit_price, unit_cogs)
+         SELECT $1, $2, $3, $4, pr.std_cost FROM ops.products pr WHERE pr.id = $2`,
+        [salesOrderId, l.productId, l.qty, l.unitPrice],
+      );
+      gross += l.unitPrice * l.qty;
+    }
+
+    let invoiceId: string | null = null;
+    if (channelName === "b2b") {
+      const number = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${salesOrderId.slice(0, 4).toUpperCase()}`;
+      const inv = await client.query(
+        `INSERT INTO ops.invoices (sales_order_id, number, due_date, status, amount)
+         VALUES ($1, $2, (COALESCE($3::date, CURRENT_DATE) + $4::int), 'sent', $5) RETURNING id`,
+        [salesOrderId, number, input.orderedAt ? input.orderedAt.slice(0, 10) : null, lagDays, gross],
+      );
+      invoiceId = inv.rows[0].id as string;
+    }
+
+    await client.query("COMMIT");
+    return { salesOrderId, invoiceId };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listSalesOrders(limit = 50): Promise<SalesOrderRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT so.id, c.name AS channel, so.customer_ref, so.status, so.ordered_at,
+            c.fee_pct, c.fee_flat,
+            COALESCE(sum(sl.unit_price * sl.qty), 0) AS gross,
+            COALESCE(sum(sl.unit_cogs * sl.qty), 0) AS cogs,
+            COALESCE(sum(sl.qty), 0) AS units,
+            inv.status AS invoice_status, inv.due_date AS invoice_due
+       FROM ops.sales_orders so
+       JOIN ops.channels c ON c.id = so.channel_id
+       LEFT JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
+       LEFT JOIN ops.invoices inv ON inv.sales_order_id = so.id
+      GROUP BY so.id, c.name, so.customer_ref, so.status, so.ordered_at, c.fee_pct, c.fee_flat, inv.status, inv.due_date
+      ORDER BY so.ordered_at DESC
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    channel: r.channel as string,
+    customerRef: (r.customer_ref as string) ?? null,
+    status: r.status as string,
+    orderedAt: new Date(r.ordered_at as string).toISOString(),
+    gross: num(r.gross),
+    cogs: num(r.cogs),
+    feePct: num(r.fee_pct),
+    feeFlat: num(r.fee_flat),
+    units: num(r.units),
+    invoiceStatus: (r.invoice_status as string) ?? null,
+    invoiceDueDate: (r.invoice_due as string) ?? null,
+  }));
+}
+
+export async function listInvoices(): Promise<InvoiceRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT inv.id, inv.number, inv.sales_order_id, c.name AS channel, so.customer_ref,
+            inv.issued_at, inv.due_date, inv.status, inv.amount
+       FROM ops.invoices inv
+       JOIN ops.sales_orders so ON so.id = inv.sales_order_id
+       JOIN ops.channels c ON c.id = so.channel_id
+      ORDER BY (inv.status = 'paid') ASC, inv.due_date ASC NULLS LAST`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    number: (r.number as string) ?? null,
+    salesOrderId: r.sales_order_id as string,
+    channel: r.channel as string,
+    customerRef: (r.customer_ref as string) ?? null,
+    issuedAt: r.issued_at as string,
+    dueDate: (r.due_date as string) ?? null,
+    status: r.status as string,
+    amount: num(r.amount),
+  }));
+}
+
+/** Update an invoice's AR status (draft/sent/paid/overdue/void). Invoice status
+ *  is mutable AR state (not a ledger); the underlying sales_order is unchanged. */
+export async function setInvoiceStatus(invoiceId: string, status: string): Promise<boolean> {
+  const allowed = ["draft", "sent", "paid", "overdue", "void"];
+  if (!allowed.includes(status)) throw new Error("invalid invoice status");
+  const p = await pool();
+  const { rowCount } = await p.query(`UPDATE ops.invoices SET status = $2 WHERE id = $1`, [invoiceId, status]);
+  return (rowCount ?? 0) > 0;
 }
