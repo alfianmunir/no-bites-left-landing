@@ -87,6 +87,44 @@ export interface PricingProductRow {
   listPrice: number;
 }
 
+export interface RecipeRow {
+  id: string;
+  productId: string;
+  sku: string;
+  name: string;
+  batchYieldQty: number;
+}
+
+export interface RequirementRow {
+  name: string;
+  unit: string;
+  need: number;
+  onHand: number;
+  short: number; // max(0, need - onHand)
+}
+
+export interface OpenBatchRow {
+  id: string;
+  sku: string;
+  name: string;
+  plannedQty: number;
+  disposition: string;
+  createdAt: string;
+}
+
+export interface BatchHistoryRow {
+  id: string;
+  sku: string;
+  name: string;
+  plannedQty: number;
+  actualYield: number;
+  yieldPct: number; // actual / planned
+  disposition: string;
+  bakedAt: string;
+  costPerUnit: number;
+  laborCost: number;
+}
+
 export interface ReceiveLineInput {
   itemId: string;
   qty: number;
@@ -390,4 +428,116 @@ export async function postWaste(itemId: string, qty: number, note: string | null
 export async function postProductWaste(productId: string, qty: number, note: string | null): Promise<void> {
   const p = await pool();
   await p.query(`SELECT ops.post_product_waste($1, $2, $3)`, [productId, qty, note || null]);
+}
+
+// --- M2 Production & costing --------------------------------------------------
+
+export async function listRecipes(): Promise<RecipeRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT r.id, r.product_id, pr.sku, pr.name, r.batch_yield_qty
+       FROM ops.recipes r JOIN ops.products pr ON pr.id = r.product_id
+      WHERE r.active AND pr.active ORDER BY pr.sku`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    productId: r.product_id as string,
+    sku: r.sku as string,
+    name: r.name as string,
+    batchYieldQty: num(r.batch_yield_qty),
+  }));
+}
+
+/** Scaled BOM vs current stock for a planned qty — the pre-start availability
+ *  check (F2 "shortfall … blocks plan confirmation"). */
+export async function getRecipeRequirements(recipeId: string, plannedQty: number): Promise<RequirementRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT i.name, i.unit,
+            round(rl.qty_per_batch * ($2::numeric / r.batch_yield_qty), 4) AS need,
+            COALESCE(b.qty_on_hand, 0) AS on_hand
+       FROM ops.recipe_lines rl
+       JOIN ops.recipes r ON r.id = rl.recipe_id
+       JOIN ops.items i ON i.id = rl.item_id
+       LEFT JOIN ops.v_stock_balance b ON b.item_id = i.id
+      WHERE rl.recipe_id = $1
+      ORDER BY i.name`,
+    [recipeId, plannedQty],
+  );
+  return rows.map((r) => {
+    const need = num(r.need);
+    const onHand = num(r.on_hand);
+    return { name: r.name as string, unit: r.unit as string, need, onHand, short: Math.max(0, need - onHand) };
+  });
+}
+
+export async function listOpenBatches(): Promise<OpenBatchRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pb.id, pr.sku, pr.name, pb.planned_qty, pb.disposition, pb.created_at
+       FROM ops.production_batches pb
+       JOIN ops.recipes r ON r.id = pb.recipe_id
+       JOIN ops.products pr ON pr.id = r.product_id
+      WHERE pb.status = 'in_progress'
+      ORDER BY pb.created_at ASC`,
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    sku: r.sku as string,
+    name: r.name as string,
+    plannedQty: num(r.planned_qty),
+    disposition: r.disposition as string,
+    createdAt: new Date(r.created_at as string).toISOString(),
+  }));
+}
+
+export async function listBatchHistory(limit = 40): Promise<BatchHistoryRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pb.id, pr.sku, pr.name, pb.planned_qty, pb.actual_yield, pb.disposition, pb.baked_at,
+            bc.cost_per_unit, bc.labor_cost
+       FROM ops.production_batches pb
+       JOIN ops.recipes r ON r.id = pb.recipe_id
+       JOIN ops.products pr ON pr.id = r.product_id
+       LEFT JOIN ops.batch_costs bc ON bc.batch_id = pb.id
+      WHERE pb.status = 'closed'
+      ORDER BY pb.baked_at DESC NULLS LAST, bc.computed_at DESC NULLS LAST
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map((r) => {
+    const planned = num(r.planned_qty);
+    const actual = num(r.actual_yield);
+    return {
+      id: r.id as string,
+      sku: r.sku as string,
+      name: r.name as string,
+      plannedQty: planned,
+      actualYield: actual,
+      yieldPct: planned > 0 ? actual / planned : 0,
+      disposition: r.disposition as string,
+      bakedAt: (r.baked_at as string) ?? "",
+      costPerUnit: num(r.cost_per_unit),
+      laborCost: num(r.labor_cost),
+    };
+  });
+}
+
+/** Open a batch — consumes the scaled BOM via ops.start_batch. Returns batch id. */
+export async function startBatch(recipeId: string, plannedQty: number, disposition: string): Promise<string> {
+  const p = await pool();
+  const { rows } = await p.query(`SELECT ops.start_batch($1, $2, $3) AS batch`, [recipeId, plannedQty, disposition]);
+  return rows[0].batch as string;
+}
+
+/** Close a batch — computes cost, posts finished goods, rolls std_cost. Returns cost/unit. */
+export async function closeBatch(
+  batchId: string,
+  actualYield: number,
+  laborMinutes: number | null,
+  laborCost: number,
+): Promise<number> {
+  const p = await pool();
+  const { rows } = await p.query(`SELECT ops.close_batch($1, $2, $3, $4) AS cpu`, [batchId, actualYield, laborMinutes, laborCost]);
+  return num(rows[0].cpu);
 }
