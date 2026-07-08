@@ -210,7 +210,7 @@ function PrepList({ prep }: { prep: PrepItemRow[] }) {
 }
 
 // ---------------------------------------------------------------- Order card
-function OrderCard({ order }: { order: SalesOrderRow }) {
+function OrderCard({ order, checked, onToggle }: { order: SalesOrderRow; checked: boolean; onToggle: (id: string) => void }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const fee = order.gross > 0 ? order.gross * order.feePct + order.feeFlat : 0;
@@ -234,12 +234,15 @@ function OrderCard({ order }: { order: SalesOrderRow }) {
   };
 
   return (
-    <div style={{ ...card, padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+    <div style={{ ...card, padding: 14, display: "flex", flexDirection: "column", gap: 8, borderColor: checked ? "var(--choco)" : "var(--line)", background: checked ? "var(--surface2)" : "#fff" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>
-          {order.customerRef || "—"}
-          <span style={{ color: "var(--soft)", fontWeight: 700, fontSize: 12.5 }}> · {order.channel}</span>
-        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={checked} onChange={() => onToggle(order.id)} style={{ width: 17, height: 17, accentColor: "var(--choco)", cursor: "pointer" }} />
+          <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>
+            {order.customerRef || "—"}
+            <span style={{ color: "var(--soft)", fontWeight: 700, fontSize: 12.5 }}> · {order.channel}</span>
+          </span>
+        </label>
         <div style={{ fontSize: 12, color: "var(--soft)" }}>{order.orderedAt.slice(0, 10)}</div>
       </div>
 
@@ -342,15 +345,68 @@ export default function OrdersPanel({
   prep: PrepItemRow[];
   today: string;
 }) {
+  const router = useRouter();
   const outstanding = invoices.filter((i) => i.status !== "paid" && i.status !== "void");
   const outstandingTotal = outstanding.reduce((s, i) => s + i.amount, 0);
 
-  // Active orders (not delivered) float to the top of the list.
-  const active = orders.filter((o) => o.fulfillmentStatus !== "delivered");
-  const doneOrders = orders.filter((o) => o.fulfillmentStatus === "delivered");
+  // Group orders by order date (already sorted newest-first from the server).
+  const groups = useMemo(() => {
+    const m = new Map<string, SalesOrderRow[]>();
+    for (const o of orders) {
+      const d = o.orderedAt.slice(0, 10);
+      const list = m.get(d);
+      if (list) list.push(o);
+      else m.set(d, [o]);
+    }
+    return [...m.entries()];
+  }, [orders]);
+
+  // Bulk selection + apply.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkFulfillment, setBulkFulfillment] = useState("");
+  const [bulkPayment, setBulkPayment] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const toggle = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  const toggleGroup = (ids: string[], allOn: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) allOn ? next.delete(id) : next.add(id);
+      return next;
+    });
+  const clearSel = () => setSelected(new Set());
+
+  const applyBulk = async () => {
+    if (selected.size === 0 || (!bulkFulfillment && !bulkPayment)) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/ops/order/bulk-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderIds: [...selected],
+          fulfillmentStatus: bulkFulfillment || undefined,
+          paymentStatus: bulkPayment || undefined,
+        }),
+      });
+      if (res.ok) {
+        clearSel();
+        setBulkFulfillment("");
+        setBulkPayment("");
+        router.refresh();
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 18, paddingBottom: selected.size > 0 ? 84 : 0 }}>
       <OrderEntry channels={channels} products={products} />
 
       <PrepList prep={prep} />
@@ -367,21 +423,59 @@ export default function OrdersPanel({
       )}
 
       <div>
-        <div style={sectionLabel}>OPEN ORDERS · {active.length}</div>
-        {active.length === 0 ? (
-          <div style={{ ...card, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No open orders — all delivered.</div>
+        <div style={sectionLabel}>RECENT ORDERS · {orders.length}</div>
+        {orders.length === 0 ? (
+          <div style={{ ...card, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No orders recorded yet.</div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {active.map((o) => <OrderCard key={o.id} order={o} />)}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {groups.map(([date, list]) => {
+              const ids = list.map((o) => o.id);
+              const allOn = ids.every((id) => selected.has(id));
+              const someOn = ids.some((id) => selected.has(id));
+              return (
+                <div key={date}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 900, color: "var(--choco)" }}>{date} <span style={{ color: "var(--soft)", fontWeight: 700 }}>· {list.length}</span></div>
+                    <button
+                      onClick={() => toggleGroup(ids, allOn)}
+                      style={{ padding: "4px 10px", borderRadius: 999, border: "1.5px solid var(--line)", background: someOn ? "var(--surface2)" : "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 11.5, cursor: "pointer" }}
+                    >
+                      {allOn ? "Deselect all" : "Select all"}
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {list.map((o) => <OrderCard key={o.id} order={o} checked={selected.has(o.id)} onToggle={toggle} />)}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
 
-      {doneOrders.length > 0 && (
-        <div>
-          <div style={sectionLabel}>DELIVERED · {doneOrders.length}</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {doneOrders.map((o) => <OrderCard key={o.id} order={o} />)}
+      {/* Sticky bulk action bar */}
+      {selected.size > 0 && (
+        <div style={{ position: "sticky", bottom: 12, zIndex: 30 }}>
+          <div style={{ ...card, padding: 12, boxShadow: "0 6px 20px rgba(40,26,11,0.18)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 900, fontSize: 13, color: "var(--choco)" }}>{selected.size} selected</span>
+            <select value={bulkFulfillment} onChange={(e) => setBulkFulfillment(e.target.value)} style={{ padding: "8px 10px", borderRadius: 10, border: "1.5px solid var(--line)", background: "#fff", fontSize: 12.5, fontWeight: 800, color: "var(--ink)", cursor: "pointer" }}>
+              <option value="">Set stage…</option>
+              {STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+            </select>
+            <select value={bulkPayment} onChange={(e) => setBulkPayment(e.target.value)} style={{ padding: "8px 10px", borderRadius: 10, border: "1.5px solid var(--line)", background: "#fff", fontSize: 12.5, fontWeight: 800, color: "var(--ink)", cursor: "pointer" }}>
+              <option value="">Set payment…</option>
+              <option value="unpaid">Unpaid</option>
+              <option value="paid">Paid</option>
+            </select>
+            <span style={{ flex: 1 }} />
+            <button onClick={clearSel} style={{ border: "none", background: "transparent", color: "var(--soft)", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Clear</button>
+            <button
+              onClick={applyBulk}
+              disabled={busy || (!bulkFulfillment && !bulkPayment)}
+              style={{ padding: "9px 18px", borderRadius: 10, border: "none", background: busy || (!bulkFulfillment && !bulkPayment) ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 13, cursor: busy || (!bulkFulfillment && !bulkPayment) ? "default" : "pointer" }}
+            >
+              {busy ? "Applying…" : `Apply to ${selected.size}`}
+            </button>
           </div>
         </div>
       )}

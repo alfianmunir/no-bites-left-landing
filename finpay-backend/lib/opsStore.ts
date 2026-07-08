@@ -932,6 +932,59 @@ async function loadOrderItems(orderIds: string[]): Promise<Map<string, SalesOrde
 /** Set an order's fulfillment and/or payment status. Marking a non-b2b order
  *  paid posts cash IN (idempotent — guarded so it never double-posts; b2b cash
  *  comes from its invoice). Reaching "delivered" stamps fulfilled_at. */
+// Apply a state patch to ONE order on an open transaction client. Returns
+// false if the order doesn't exist. Shared by single + bulk update.
+async function applyOrderState(
+  client: import("pg").PoolClient,
+  orderId: string,
+  patch: { fulfillmentStatus?: string; paymentStatus?: string },
+): Promise<boolean> {
+  const cur = await client.query(
+    `SELECT so.payment_status, c.name AS channel, c.fee_pct, c.fee_flat,
+            COALESCE(sum(sl.unit_price * sl.qty), 0) AS gross
+       FROM ops.sales_orders so
+       JOIN ops.channels c ON c.id = so.channel_id
+       LEFT JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
+      WHERE so.id = $1
+      GROUP BY so.payment_status, c.name, c.fee_pct, c.fee_flat`,
+    [orderId],
+  );
+  if (!cur.rows[0]) return false;
+  const row = cur.rows[0];
+
+  if (patch.fulfillmentStatus) {
+    await client.query(
+      `UPDATE ops.sales_orders
+          SET fulfillment_status = $2,
+              fulfilled_at = CASE WHEN $2 = 'delivered' AND fulfilled_at IS NULL THEN now()
+                                  WHEN $2 <> 'delivered' THEN NULL ELSE fulfilled_at END
+        WHERE id = $1`,
+      [orderId, patch.fulfillmentStatus],
+    );
+  }
+
+  if (patch.paymentStatus) {
+    await client.query(`UPDATE ops.sales_orders SET payment_status = $2 WHERE id = $1`, [orderId, patch.paymentStatus]);
+    // Post cash the first time a non-b2b order turns paid (b2b posts via its
+    // invoice). Idempotent: only if no sales cash entry exists for this order.
+    if (patch.paymentStatus === "paid" && row.payment_status !== "paid" && row.channel !== "b2b") {
+      const gross = num(row.gross);
+      const net = gross - (gross * num(row.fee_pct) + num(row.fee_flat));
+      const isMarketplace = row.channel === "gofood" || row.channel === "grabfood" || row.channel === "shopeefood";
+      const account = isMarketplace ? "marketplace_pending" : "bank";
+      if (net > 0) {
+        await client.query(
+          `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+           SELECT 'in', $1, $2, $3, 'sales_order', $4, CURRENT_DATE, NULL
+            WHERE NOT EXISTS (SELECT 1 FROM ops.cash_entries WHERE ref_type = 'sales_order' AND ref_id = $4)`,
+          [net, account, `sales_${row.channel}`, orderId],
+        );
+      }
+    }
+  }
+  return true;
+}
+
 export async function updateOrderState(
   orderId: string,
   patch: { fulfillmentStatus?: string; paymentStatus?: string },
@@ -940,52 +993,34 @@ export async function updateOrderState(
   const client = await p.connect();
   try {
     await client.query("BEGIN");
-    const cur = await client.query(
-      `SELECT so.payment_status, c.name AS channel, c.fee_pct, c.fee_flat,
-              COALESCE(sum(sl.unit_price * sl.qty), 0) AS gross
-         FROM ops.sales_orders so
-         JOIN ops.channels c ON c.id = so.channel_id
-         LEFT JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
-        WHERE so.id = $1
-        GROUP BY so.payment_status, c.name, c.fee_pct, c.fee_flat`,
-      [orderId],
-    );
-    if (!cur.rows[0]) { await client.query("ROLLBACK"); return false; }
-    const row = cur.rows[0];
+    const ok = await applyOrderState(client, orderId, patch);
+    await client.query(ok ? "COMMIT" : "ROLLBACK");
+    return ok;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
-    if (patch.fulfillmentStatus) {
-      await client.query(
-        `UPDATE ops.sales_orders
-            SET fulfillment_status = $2,
-                fulfilled_at = CASE WHEN $2 = 'delivered' AND fulfilled_at IS NULL THEN now()
-                                    WHEN $2 <> 'delivered' THEN NULL ELSE fulfilled_at END
-          WHERE id = $1`,
-        [orderId, patch.fulfillmentStatus],
-      );
+/** Bulk-apply a status/payment patch to many orders in one transaction.
+ *  Returns the count updated. Missing ids are skipped. */
+export async function updateOrdersState(
+  orderIds: string[],
+  patch: { fulfillmentStatus?: string; paymentStatus?: string },
+): Promise<number> {
+  if (orderIds.length === 0) return 0;
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    let n = 0;
+    for (const id of orderIds) {
+      if (await applyOrderState(client, id, patch)) n++;
     }
-
-    if (patch.paymentStatus) {
-      await client.query(`UPDATE ops.sales_orders SET payment_status = $2 WHERE id = $1`, [orderId, patch.paymentStatus]);
-      // Post cash the first time a non-b2b order turns paid (b2b posts via its
-      // invoice). Idempotent: only if no sales cash entry exists for this order.
-      if (patch.paymentStatus === "paid" && row.payment_status !== "paid" && row.channel !== "b2b") {
-        const gross = num(row.gross);
-        const net = gross - (gross * num(row.fee_pct) + num(row.fee_flat));
-        const isMarketplace = row.channel === "gofood" || row.channel === "grabfood" || row.channel === "shopeefood";
-        const account = isMarketplace ? "marketplace_pending" : "bank";
-        if (net > 0) {
-          await client.query(
-            `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
-             SELECT 'in', $1, $2, $3, 'sales_order', $4, CURRENT_DATE, NULL
-              WHERE NOT EXISTS (SELECT 1 FROM ops.cash_entries WHERE ref_type = 'sales_order' AND ref_id = $4)`,
-            [net, account, `sales_${row.channel}`, orderId],
-          );
-        }
-      }
-    }
-
     await client.query("COMMIT");
-    return true;
+    return n;
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
     throw e;
