@@ -3,10 +3,13 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { computeEconomics, agingBucket, formatPct, type AgingBucket } from "@/lib/opsOrderMath";
-import type { ChannelRow, PricingProductRow, SalesOrderRow, InvoiceRow } from "@/lib/opsStore";
+import type { ChannelRow, PricingProductRow, SalesOrderRow, InvoiceRow, PrepItemRow } from "@/lib/opsStore";
 
 function rupiah(n: number): string {
   return "Rp " + Math.round(n).toLocaleString("id-ID");
+}
+function qtyFmt(n: number): string {
+  return Number(n.toFixed(3)).toLocaleString("id-ID");
 }
 
 const inputStyle: React.CSSProperties = {
@@ -15,6 +18,7 @@ const inputStyle: React.CSSProperties = {
 };
 const labelStyle: React.CSSProperties = { fontSize: 11.5, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.03em", marginBottom: 4, display: "block" };
 const card: React.CSSProperties = { background: "#fff", border: "1.5px solid var(--line)", borderRadius: 16, padding: 16 };
+const sectionLabel: React.CSSProperties = { fontSize: 11.5, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.05em", marginBottom: 8 };
 
 interface LineDraft {
   key: number;
@@ -28,6 +32,20 @@ const blankLine = (): LineDraft => ({ key: nextKey++, productId: "", qty: "1", u
 const BUCKET_COLOR: Record<AgingBucket, string> = {
   paid: "var(--green)", current: "var(--soft)", "1-30": "var(--orange)", "31-60": "var(--orange)", "60+": "var(--red)",
 };
+
+// Kitchen fulfillment lifecycle.
+const STAGES = [
+  { key: "preparing", label: "Preparing", color: "var(--orange)" },
+  { key: "packed", label: "Packed", color: "var(--blue)" },
+  { key: "in_delivery", label: "In delivery", color: "var(--choco)" },
+  { key: "delivered", label: "Delivered", color: "var(--green)" },
+] as const;
+const STAGE_LABEL: Record<string, string> = Object.fromEntries(STAGES.map((s) => [s.key, s.label]));
+const STAGE_COLOR: Record<string, string> = Object.fromEntries(STAGES.map((s) => [s.key, s.color]));
+
+function itemsSummary(items: { name: string; qty: number }[]): string {
+  return items.map((i) => `${qtyFmt(i.qty)}× ${i.name}`).join(" · ");
+}
 
 // ---------------------------------------------------------------- Quick entry
 function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: PricingProductRow[] }) {
@@ -47,7 +65,6 @@ function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: 
   const addLine = () => setLines((ls) => [...ls, blankLine()]);
   const removeLine = (key: number) => setLines((ls) => (ls.length === 1 ? ls : ls.filter((l) => l.key !== key)));
 
-  // Default a line's price to the product list price when a product is picked.
   const pickProduct = (key: number, productId: string) => {
     const p = productById.get(productId);
     setLine(key, { productId, unitPrice: p ? String(Math.round(p.listPrice)) : "" });
@@ -58,6 +75,7 @@ function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: 
     .map((l) => ({ qty: Number(l.qty), unitPrice: Number(l.unitPrice) || 0, unitCogs: productById.get(l.productId)?.stdCost ?? 0 }));
   const econ = computeEconomics(econLines, channel?.feePct ?? 0, channel?.feeFlat ?? 0);
   const isB2B = channel?.name === "b2b";
+  const isCanteen = channel?.name === "canteen";
 
   const submit = async () => {
     setError(null);
@@ -79,7 +97,7 @@ function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: 
       const data = await res.json();
       if (!res.ok) setError(data.error ?? "Could not record the order.");
       else {
-        setDone(isB2B ? "Order recorded + invoice raised." : "Order recorded.");
+        setDone(isB2B ? "Order recorded + invoice raised." : isCanteen ? "Canteen order recorded — paid & delivered." : "Order recorded.");
         setLines([blankLine()]);
         setCustomerRef("");
         router.refresh();
@@ -118,6 +136,10 @@ function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: 
         </div>
       </div>
 
+      {isCanteen && (
+        <div style={{ fontSize: 12, color: "var(--soft)", fontWeight: 600, marginTop: -4 }}>Canteen orders are recorded as <strong>paid</strong> and <strong>delivered</strong> right away.</div>
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <label style={labelStyle}>Items</label>
         {lines.map((l) => {
@@ -155,6 +177,114 @@ function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: 
       <button onClick={submit} disabled={busy} style={{ alignSelf: "flex-start", padding: "12px 22px", borderRadius: 12, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 14.5, cursor: busy ? "default" : "pointer" }}>
         {busy ? "Saving…" : isB2B ? "Record order + invoice" : "Record order"}
       </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Prep list
+function PrepList({ prep }: { prep: PrepItemRow[] }) {
+  const totalUnits = prep.reduce((s, p) => s + p.qty, 0);
+  return (
+    <div style={{ ...card, borderColor: "var(--orange)", background: "var(--tint-amber)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+        <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>🧑‍🍳 To prepare</div>
+        <div style={{ fontSize: 12, color: "var(--soft)", fontWeight: 700 }}>{qtyFmt(totalUnits)} units across preparing orders</div>
+      </div>
+      {prep.length === 0 ? (
+        <div style={{ fontSize: 13.5, color: "var(--soft)" }}>Nothing in preparing — all caught up. 🎉</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {prep.map((p) => (
+            <div key={p.productId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 12px", background: "#fff", borderRadius: 10, border: "1.5px solid var(--line)" }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)" }}>{p.name} <span style={{ color: "var(--soft)", fontWeight: 600, fontSize: 12 }}>· {p.sku}</span></div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, whiteSpace: "nowrap" }}>
+                <span style={{ fontSize: 18, fontWeight: 900, color: "var(--choco)" }}>{qtyFmt(p.qty)}</span>
+                <span style={{ fontSize: 11.5, color: "var(--soft)", fontWeight: 700 }}>· {p.orders} order{p.orders > 1 ? "s" : ""}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Order card
+function OrderCard({ order }: { order: SalesOrderRow }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const fee = order.gross > 0 ? order.gross * order.feePct + order.feeFlat : 0;
+  const net = order.gross - fee - order.cogs;
+  const margin = order.gross > 0 ? net / order.gross : 0;
+  const isB2B = order.channel === "b2b";
+  const paid = order.paymentStatus === "paid";
+
+  const patch = async (body: { fulfillmentStatus?: string; paymentStatus?: string }) => {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/ops/order/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: order.id, ...body }),
+      });
+      if (res.ok) router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ ...card, padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>
+          {order.customerRef || "—"}
+          <span style={{ color: "var(--soft)", fontWeight: 700, fontSize: 12.5 }}> · {order.channel}</span>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--soft)" }}>{order.orderedAt.slice(0, 10)}</div>
+      </div>
+
+      {order.items.length > 0 && (
+        <div style={{ fontSize: 13, color: "var(--ink)" }}>{itemsSummary(order.items)}</div>
+      )}
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 14px", fontSize: 12.5, color: "var(--soft)" }}>
+        <span>Gross <strong style={{ color: "var(--ink)" }}>{rupiah(order.gross)}</strong></span>
+        <span>Net <strong style={{ color: "var(--ink)" }}>{rupiah(net)}</strong></span>
+        <span>Margin <strong style={{ color: margin < 0.3 ? "var(--red)" : "var(--green)" }}>{formatPct(margin)}</strong></span>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+        {/* Fulfillment */}
+        <span aria-hidden style={{ width: 9, height: 9, borderRadius: 999, background: STAGE_COLOR[order.fulfillmentStatus] ?? "var(--soft)", flexShrink: 0 }} />
+        <select
+          value={order.fulfillmentStatus}
+          disabled={busy}
+          onChange={(e) => patch({ fulfillmentStatus: e.target.value })}
+          style={{ padding: "6px 10px", borderRadius: 999, border: "1.5px solid var(--line)", background: "#fff", color: "var(--ink)", fontSize: 12.5, fontWeight: 800, cursor: "pointer" }}
+        >
+          {STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+        </select>
+
+        <span style={{ flex: 1 }} />
+
+        {/* Payment */}
+        {isB2B ? (
+          <span style={{ fontSize: 12, fontWeight: 800, color: order.invoiceStatus === "paid" ? "var(--green)" : "var(--orange)" }}>
+            invoice: {order.invoiceStatus ?? "—"}
+          </span>
+        ) : (
+          <>
+            <span style={{ fontSize: 12, fontWeight: 800, color: paid ? "var(--green)" : "var(--orange)" }}>{paid ? "Paid" : "Unpaid"}</span>
+            <button
+              onClick={() => patch({ paymentStatus: paid ? "unpaid" : "paid" })}
+              disabled={busy}
+              style={{ padding: "6px 12px", borderRadius: 999, border: `1.5px solid ${paid ? "var(--line)" : "var(--green)"}`, background: "#fff", color: paid ? "var(--soft)" : "var(--green)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}
+            >
+              {paid ? "Mark unpaid" : "Mark paid"}
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -202,26 +332,32 @@ export default function OrdersPanel({
   products,
   orders,
   invoices,
+  prep,
   today,
 }: {
   channels: ChannelRow[];
   products: PricingProductRow[];
   orders: SalesOrderRow[];
   invoices: InvoiceRow[];
+  prep: PrepItemRow[];
   today: string;
 }) {
   const outstanding = invoices.filter((i) => i.status !== "paid" && i.status !== "void");
   const outstandingTotal = outstanding.reduce((s, i) => s + i.amount, 0);
 
+  // Active orders (not delivered) float to the top of the list.
+  const active = orders.filter((o) => o.fulfillmentStatus !== "delivered");
+  const doneOrders = orders.filter((o) => o.fulfillmentStatus === "delivered");
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <OrderEntry channels={channels} products={products} />
 
+      <PrepList prep={prep} />
+
       {invoices.length > 0 && (
         <div>
-          <div style={{ fontSize: 11.5, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.05em", marginBottom: 8 }}>
-            B2B INVOICES (AR) · {outstanding.length} open · {rupiah(outstandingTotal)}
-          </div>
+          <div style={sectionLabel}>B2B INVOICES (AR) · {outstanding.length} open · {rupiah(outstandingTotal)}</div>
           <div style={{ ...card, padding: 0, overflow: "hidden" }}>
             {invoices.map((inv) => (
               <InvoiceItem key={inv.id} inv={inv} today={today} />
@@ -231,45 +367,24 @@ export default function OrdersPanel({
       )}
 
       <div>
-        <div style={{ fontSize: 11.5, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.05em", marginBottom: 8 }}>
-          RECENT ORDERS · {orders.length}
-        </div>
-        {orders.length === 0 ? (
-          <div style={{ ...card, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No orders recorded yet.</div>
+        <div style={sectionLabel}>OPEN ORDERS · {active.length}</div>
+        {active.length === 0 ? (
+          <div style={{ ...card, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No open orders — all delivered.</div>
         ) : (
-          <div style={{ overflowX: "auto", background: "#fff", border: "1.5px solid var(--line)", borderRadius: 14 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
-              <thead>
-                <tr>
-                  {["Date", "Channel", "Customer", "Gross", "Net", "Margin"].map((h, i) => (
-                    <th key={h} style={{ textAlign: i >= 3 ? "right" : "left", padding: "9px 12px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--soft)", borderBottom: "1.5px solid var(--line)", whiteSpace: "nowrap" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {orders.map((o) => {
-                  const fee = o.gross > 0 ? o.gross * o.feePct + o.feeFlat : 0;
-                  const net = o.gross - fee - o.cogs;
-                  const margin = o.gross > 0 ? net / o.gross : 0;
-                  return (
-                    <tr key={o.id}>
-                      <td style={{ padding: "10px 12px", fontSize: 12.5, color: "var(--soft)", borderBottom: "1px solid var(--line)", whiteSpace: "nowrap" }}>{o.orderedAt.slice(0, 10)}</td>
-                      <td style={{ padding: "10px 12px", fontSize: 13, borderBottom: "1px solid var(--line)", fontWeight: 700 }}>
-                        {o.channel}
-                        {o.invoiceStatus && <span style={{ color: o.invoiceStatus === "paid" ? "var(--green)" : "var(--orange)", fontWeight: 700, fontSize: 11.5 }}> · {o.invoiceStatus}</span>}
-                      </td>
-                      <td style={{ padding: "10px 12px", fontSize: 13, borderBottom: "1px solid var(--line)", color: "var(--ink)" }}>{o.customerRef || "—"}</td>
-                      <td style={{ padding: "10px 12px", fontSize: 13, borderBottom: "1px solid var(--line)", textAlign: "right" }}>{rupiah(o.gross)}</td>
-                      <td style={{ padding: "10px 12px", fontSize: 13, borderBottom: "1px solid var(--line)", textAlign: "right", fontWeight: 800 }}>{rupiah(net)}</td>
-                      <td style={{ padding: "10px 12px", fontSize: 13, borderBottom: "1px solid var(--line)", textAlign: "right", fontWeight: 700, color: margin < 0.3 ? "var(--red)" : "var(--green)" }}>{formatPct(margin)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {active.map((o) => <OrderCard key={o.id} order={o} />)}
           </div>
         )}
       </div>
+
+      {doneOrders.length > 0 && (
+        <div>
+          <div style={sectionLabel}>DELIVERED · {doneOrders.length}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {doneOrders.map((o) => <OrderCard key={o.id} order={o} />)}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -182,19 +182,38 @@ export interface SalesLineInput {
   unitPrice: number;
 }
 
+export interface SalesOrderItem {
+  sku: string;
+  name: string;
+  qty: number;
+}
+
 export interface SalesOrderRow {
   id: string;
   channel: string;
   customerRef: string | null;
   status: string;
+  fulfillmentStatus: string; // preparing | packed | in_delivery | delivered
+  paymentStatus: string; // unpaid | paid
   orderedAt: string;
   gross: number;
   cogs: number;
   feePct: number;
   feeFlat: number;
   units: number;
+  items: SalesOrderItem[];
   invoiceStatus: string | null;
   invoiceDueDate: string | null;
+}
+
+/** A product's total quantity across all orders still in "preparing" — the
+ *  kitchen prep list (what to bake/pack next). */
+export interface PrepItemRow {
+  productId: string;
+  sku: string;
+  name: string;
+  qty: number;
+  orders: number;
 }
 
 export interface InvoiceRow {
@@ -783,10 +802,19 @@ export async function createSalesOrder(input: {
     const feeFlat = num(ch.rows[0].fee_flat);
     const lagDays = num(ch.rows[0].settlement_lag_days);
 
+    // Fulfillment + payment start states by channel. Canteen is an internal
+    // cash sale, born delivered + paid. Cash-settling channels (direct,
+    // marketplaces) are paid at sale; b2b (invoice) and website (PG webhook)
+    // start unpaid.
+    const bornDelivered = channelName === "canteen";
+    const paidAtSale = channelName !== "b2b" && channelName !== "website";
+    const fulfillmentStatus = bornDelivered ? "delivered" : "preparing";
+    const paymentStatus = paidAtSale ? "paid" : "unpaid";
+
     const so = await client.query(
-      `INSERT INTO ops.sales_orders (channel_id, customer_ref, source_order_id, ordered_at)
-       VALUES ($1, $2, $3, COALESCE($4::timestamptz, now())) RETURNING id`,
-      [input.channelId, input.customerRef?.trim() || null, input.source?.trim() || null, input.orderedAt || null],
+      `INSERT INTO ops.sales_orders (channel_id, customer_ref, source_order_id, ordered_at, fulfillment_status, payment_status, fulfilled_at)
+       VALUES ($1, $2, $3, COALESCE($4::timestamptz, now()), $5, $6, CASE WHEN $7 THEN now() ELSE NULL END) RETURNING id`,
+      [input.channelId, input.customerRef?.trim() || null, input.source?.trim() || null, input.orderedAt || null, fulfillmentStatus, paymentStatus, bornDelivered],
     );
     const salesOrderId = so.rows[0].id as string;
 
@@ -843,7 +871,8 @@ export async function createSalesOrder(input: {
 export async function listSalesOrders(limit = 50): Promise<SalesOrderRow[]> {
   const p = await pool();
   const { rows } = await p.query(
-    `SELECT so.id, c.name AS channel, so.customer_ref, so.status, so.ordered_at,
+    `SELECT so.id, c.name AS channel, so.customer_ref, so.status,
+            so.fulfillment_status, so.payment_status, so.ordered_at,
             c.fee_pct, c.fee_flat,
             COALESCE(sum(sl.unit_price * sl.qty), 0) AS gross,
             COALESCE(sum(sl.unit_cogs * sl.qty), 0) AS cogs,
@@ -853,24 +882,139 @@ export async function listSalesOrders(limit = 50): Promise<SalesOrderRow[]> {
        JOIN ops.channels c ON c.id = so.channel_id
        LEFT JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
        LEFT JOIN ops.invoices inv ON inv.sales_order_id = so.id
-      GROUP BY so.id, c.name, so.customer_ref, so.status, so.ordered_at, c.fee_pct, c.fee_flat, inv.status, inv.due_date
+      GROUP BY so.id, c.name, so.customer_ref, so.status, so.fulfillment_status, so.payment_status, so.ordered_at, c.fee_pct, c.fee_flat, inv.status, inv.due_date
       ORDER BY so.ordered_at DESC
       LIMIT $1`,
     [limit],
   );
+  const ids = rows.map((r) => r.id as string);
+  const items = await loadOrderItems(ids);
   return rows.map((r) => ({
     id: r.id as string,
     channel: r.channel as string,
     customerRef: (r.customer_ref as string) ?? null,
     status: r.status as string,
+    fulfillmentStatus: r.fulfillment_status as string,
+    paymentStatus: r.payment_status as string,
     orderedAt: new Date(r.ordered_at as string).toISOString(),
     gross: num(r.gross),
     cogs: num(r.cogs),
     feePct: num(r.fee_pct),
     feeFlat: num(r.fee_flat),
     units: num(r.units),
+    items: items.get(r.id as string) ?? [],
     invoiceStatus: (r.invoice_status as string) ?? null,
     invoiceDueDate: (r.invoice_due as string) ?? null,
+  }));
+}
+
+async function loadOrderItems(orderIds: string[]): Promise<Map<string, SalesOrderItem[]>> {
+  const map = new Map<string, SalesOrderItem[]>();
+  if (orderIds.length === 0) return map;
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT sl.sales_order_id, pr.sku, pr.name, sl.qty
+       FROM ops.sales_lines sl
+       JOIN ops.products pr ON pr.id = sl.product_id
+      WHERE sl.sales_order_id = ANY($1::uuid[])
+      ORDER BY pr.name`,
+    [orderIds],
+  );
+  for (const r of rows) {
+    const item: SalesOrderItem = { sku: r.sku as string, name: r.name as string, qty: num(r.qty) };
+    const list = map.get(r.sales_order_id as string);
+    if (list) list.push(item);
+    else map.set(r.sales_order_id as string, [item]);
+  }
+  return map;
+}
+
+/** Set an order's fulfillment and/or payment status. Marking a non-b2b order
+ *  paid posts cash IN (idempotent — guarded so it never double-posts; b2b cash
+ *  comes from its invoice). Reaching "delivered" stamps fulfilled_at. */
+export async function updateOrderState(
+  orderId: string,
+  patch: { fulfillmentStatus?: string; paymentStatus?: string },
+): Promise<boolean> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const cur = await client.query(
+      `SELECT so.payment_status, c.name AS channel, c.fee_pct, c.fee_flat,
+              COALESCE(sum(sl.unit_price * sl.qty), 0) AS gross
+         FROM ops.sales_orders so
+         JOIN ops.channels c ON c.id = so.channel_id
+         LEFT JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
+        WHERE so.id = $1
+        GROUP BY so.payment_status, c.name, c.fee_pct, c.fee_flat`,
+      [orderId],
+    );
+    if (!cur.rows[0]) { await client.query("ROLLBACK"); return false; }
+    const row = cur.rows[0];
+
+    if (patch.fulfillmentStatus) {
+      await client.query(
+        `UPDATE ops.sales_orders
+            SET fulfillment_status = $2,
+                fulfilled_at = CASE WHEN $2 = 'delivered' AND fulfilled_at IS NULL THEN now()
+                                    WHEN $2 <> 'delivered' THEN NULL ELSE fulfilled_at END
+          WHERE id = $1`,
+        [orderId, patch.fulfillmentStatus],
+      );
+    }
+
+    if (patch.paymentStatus) {
+      await client.query(`UPDATE ops.sales_orders SET payment_status = $2 WHERE id = $1`, [orderId, patch.paymentStatus]);
+      // Post cash the first time a non-b2b order turns paid (b2b posts via its
+      // invoice). Idempotent: only if no sales cash entry exists for this order.
+      if (patch.paymentStatus === "paid" && row.payment_status !== "paid" && row.channel !== "b2b") {
+        const gross = num(row.gross);
+        const net = gross - (gross * num(row.fee_pct) + num(row.fee_flat));
+        const isMarketplace = row.channel === "gofood" || row.channel === "grabfood" || row.channel === "shopeefood";
+        const account = isMarketplace ? "marketplace_pending" : "bank";
+        if (net > 0) {
+          await client.query(
+            `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+             SELECT 'in', $1, $2, $3, 'sales_order', $4, CURRENT_DATE, NULL
+              WHERE NOT EXISTS (SELECT 1 FROM ops.cash_entries WHERE ref_type = 'sales_order' AND ref_id = $4)`,
+            [net, account, `sales_${row.channel}`, orderId],
+          );
+        }
+      }
+    }
+
+    await client.query("COMMIT");
+    return true;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Kitchen prep list: total qty of each product across all orders still in
+ *  "preparing" (excludes cancelled). Drives "what to make next". */
+export async function listPreparingItems(): Promise<PrepItemRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pr.id, pr.sku, pr.name,
+            COALESCE(sum(sl.qty), 0) AS qty,
+            count(DISTINCT so.id)::int AS orders
+       FROM ops.sales_orders so
+       JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
+       JOIN ops.products pr ON pr.id = sl.product_id
+      WHERE so.fulfillment_status = 'preparing' AND so.status <> 'cancelled'
+      GROUP BY pr.id, pr.sku, pr.name
+      ORDER BY qty DESC, pr.name`,
+  );
+  return rows.map((r) => ({
+    productId: r.id as string,
+    sku: r.sku as string,
+    name: r.name as string,
+    qty: num(r.qty),
+    orders: num(r.orders),
   }));
 }
 

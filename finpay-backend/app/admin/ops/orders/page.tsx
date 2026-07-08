@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, listChannels, listPricingProducts, listSalesOrders, listInvoices } from "@/lib/opsStore";
+import { opsEnabled, listChannels, listPricingProducts, listSalesOrders, listInvoices, listPreparingItems } from "@/lib/opsStore";
 import { OpsShell, DbNotice } from "../OpsChrome";
 import OrdersPanel from "./OrdersPanel";
 
@@ -18,18 +18,19 @@ export default async function OpsOrdersPage() {
     );
   }
 
-  const [channels, products, orders, invoices] = await Promise.all([
+  const [channels, products, orders, invoices, prep] = await Promise.all([
     listChannels(),
     listPricingProducts(),
     listSalesOrders(),
     listInvoices(),
+    listPreparingItems(),
   ]);
   const today = new Date().toISOString().slice(0, 10);
-  const subtitle = orders.length > 0 ? `${orders.length} recorded` : "Log WA / direct / marketplace / B2B orders";
+  const subtitle = orders.length > 0 ? `${orders.length} recorded` : "Log WA / direct / marketplace / B2B / canteen orders";
 
   return (
     <OpsShell active="/admin/ops/orders" title="Orders" subtitle={subtitle}>
-      <OrdersPanel channels={channels} products={products} orders={orders} invoices={invoices} today={today} />
+      <OrdersPanel channels={channels} products={products} orders={orders} invoices={invoices} prep={prep} today={today} />
     </OpsShell>
   );
 }
