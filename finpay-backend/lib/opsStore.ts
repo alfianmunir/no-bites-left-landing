@@ -87,6 +87,7 @@ export interface PricingProductRow {
   isBundle: boolean;
   stdCost: number;
   listPrice: number;
+  wasteRate: number | null; // per-product override; null = inherit general
 }
 
 export interface RecipeRow {
@@ -392,19 +393,24 @@ export async function getPricingConfig(): Promise<PricingConfig> {
 
 /** Products with the cost + price inputs the margin math needs. std_cost is the
  *  ledger-derived cost (moving-average receipts + batch costing keep it live). */
-export async function listPricingProducts(): Promise<PricingProductRow[]> {
-  const p = await pool();
-  const { rows } = await p.query(
-    `SELECT id, sku, name, is_bundle, std_cost, list_price FROM ops.products WHERE active ORDER BY is_bundle, sku`,
-  );
-  return rows.map((r) => ({
+function mapPricingProduct(r: Record<string, unknown>): PricingProductRow {
+  return {
     id: r.id as string,
     sku: r.sku as string,
     name: r.name as string,
     isBundle: Boolean(r.is_bundle),
     stdCost: num(r.std_cost),
     listPrice: num(r.list_price),
-  }));
+    wasteRate: r.waste_rate == null ? null : num(r.waste_rate),
+  };
+}
+
+export async function listPricingProducts(): Promise<PricingProductRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT id, sku, name, is_bundle, std_cost, list_price, waste_rate FROM ops.products WHERE active ORDER BY is_bundle, sku`,
+  );
+  return rows.map(mapPricingProduct);
 }
 
 /** Persist a new list price for a product (the actual "price adjustment").
@@ -413,19 +419,31 @@ export async function updateProductPrice(productId: string, listPrice: number): 
   const p = await pool();
   const { rows } = await p.query(
     `UPDATE ops.products SET list_price = $2 WHERE id = $1 AND active
-       RETURNING id, sku, name, is_bundle, std_cost, list_price`,
+       RETURNING id, sku, name, is_bundle, std_cost, list_price, waste_rate`,
     [productId, listPrice],
   );
-  if (!rows[0]) return null;
-  const r = rows[0];
-  return {
-    id: r.id as string,
-    sku: r.sku as string,
-    name: r.name as string,
-    isBundle: Boolean(r.is_bundle),
-    stdCost: num(r.std_cost),
-    listPrice: num(r.list_price),
-  };
+  return rows[0] ? mapPricingProduct(rows[0]) : null;
+}
+
+/** Set (or clear, with null) a product's per-menu waste-rate override. */
+export async function updateProductWasteRate(productId: string, wasteRate: number | null): Promise<PricingProductRow | null> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `UPDATE ops.products SET waste_rate = $2 WHERE id = $1 AND active
+       RETURNING id, sku, name, is_bundle, std_cost, list_price, waste_rate`,
+    [productId, wasteRate],
+  );
+  return rows[0] ? mapPricingProduct(rows[0]) : null;
+}
+
+/** Set the general (default) waste rate in ops.config. */
+export async function setGeneralWasteRate(wasteRate: number): Promise<void> {
+  const p = await pool();
+  await p.query(
+    `INSERT INTO ops.config (key, value, updated_at) VALUES ('waste_rate', to_jsonb($1::numeric), now())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+    [wasteRate],
+  );
 }
 
 // --- Writes (all go through the append-only RPCs) ----------------------------

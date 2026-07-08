@@ -47,6 +47,7 @@ export interface PricingProductInput {
   isBundle: boolean;
   stdCost: number;
   listPrice: number;
+  wasteRate?: number | null; // per-product override; null/undefined = inherit general
 }
 
 export interface SkuPricing {
@@ -56,6 +57,8 @@ export interface SkuPricing {
   isBundle: boolean;
   stdCost: number;
   listPrice: number;
+  wasteRate: number; // the effective rate actually used
+  wasteFromProduct: boolean; // true if a per-product override drove it
   effCost: number;
   margin: number; // at current list price
   floor: number; // applicable floor (bundle vs standard)
@@ -64,13 +67,15 @@ export interface SkuPricing {
   b2bPrice: number; // D8 wholesale price at 35% true margin
 }
 
-/** Compute the full pricing row for one SKU at a given waste rate. */
+/** Compute the full pricing row for one SKU. Waste-rate precedence:
+ *  explicit override (what-if) → per-product rate → general config rate. */
 export function computeSkuPricing(
   p: PricingProductInput,
   cfg: PricingConfig,
   wasteRateOverride?: number,
 ): SkuPricing {
-  const wasteRate = wasteRateOverride ?? cfg.wasteRate;
+  const productRate = p.wasteRate == null ? null : p.wasteRate;
+  const wasteRate = wasteRateOverride ?? productRate ?? cfg.wasteRate;
   const effCost = effectiveCost(p.stdCost, wasteRate);
   const floor = p.isBundle ? cfg.bundleMarginFloor : cfg.marginFloor;
   const margin = marginAt(p.listPrice, effCost);
@@ -81,6 +86,8 @@ export function computeSkuPricing(
     isBundle: p.isBundle,
     stdCost: p.stdCost,
     listPrice: p.listPrice,
+    wasteRate,
+    wasteFromProduct: wasteRateOverride == null && productRate != null,
     effCost,
     margin,
     floor,
