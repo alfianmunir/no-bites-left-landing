@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import type { OpsRole } from "@/lib/adminAuth";
 import type {
   RecipeRow,
   OpenBatchRow,
@@ -222,8 +223,9 @@ function RecipeDraftForm({ recipes, onAdd }: { recipes: RecipeRow[]; onAdd: (l: 
 }
 
 // ------------------------------------------------ Build a batch (the cycle)
-function BatchBuilder({ recipes }: { recipes: RecipeRow[] }) {
+function BatchBuilder({ recipes, role }: { recipes: RecipeRow[]; role: OpsRole }) {
   const router = useRouter();
+  const isStaff = role === "staff";
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [laborCost, setLaborCost] = useState("");
   const [laborMinutes, setLaborMinutes] = useState("");
@@ -239,8 +241,12 @@ function BatchBuilder({ recipes }: { recipes: RecipeRow[] }) {
   const start = async () => {
     setError(null);
     if (lines.length === 0) return setError("Add at least one recipe first.");
-    const lc = Number(laborCost || 0);
-    if (!Number.isFinite(lc) || lc < 0) return setError("Enter a valid labor cost (0 or more).");
+    // Staff never send labor — the super-admin adds it when closing.
+    let lc: number | null = null;
+    if (!isStaff) {
+      lc = Number(laborCost || 0);
+      if (!Number.isFinite(lc) || lc < 0) return setError("Enter a valid labor cost (0 or more).");
+    }
     setBusy(true);
     try {
       const res = await fetch("/api/admin/ops/batch/start-cycle", {
@@ -293,19 +299,23 @@ function BatchBuilder({ recipes }: { recipes: RecipeRow[] }) {
 
       <RecipeDraftForm recipes={recipes} onAdd={addLine} />
 
-      {/* Labor (once for the whole cycle) + start */}
+      {/* Labor (once for the whole cycle) + start. Staff don't set labor — the
+          super-admin enters it when closing the batch. */}
       {lines.length > 0 && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div>
-              <label style={labelStyle}>Labor cost — whole batch (Rp)</label>
-              <input type="number" inputMode="numeric" min="0" style={inputStyle} value={laborCost} onChange={(e) => setLaborCost(e.target.value)} placeholder="split across recipes" />
+          {!isStaff && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div>
+                <label style={labelStyle}>Labor cost — whole batch (Rp)</label>
+                <input type="number" inputMode="numeric" min="0" style={inputStyle} value={laborCost} onChange={(e) => setLaborCost(e.target.value)} placeholder="split across recipes" />
+              </div>
+              <div>
+                <label style={labelStyle}>Labor mins (opt)</label>
+                <input type="number" inputMode="numeric" min="0" style={inputStyle} value={laborMinutes} onChange={(e) => setLaborMinutes(e.target.value)} />
+              </div>
             </div>
-            <div>
-              <label style={labelStyle}>Labor mins (opt)</label>
-              <input type="number" inputMode="numeric" min="0" style={inputStyle} value={laborMinutes} onChange={(e) => setLaborMinutes(e.target.value)} />
-            </div>
-          </div>
+          )}
+          {isStaff && <div style={{ fontSize: 12, color: "var(--soft)", fontWeight: 600 }}>Labor cost is added by the admin when the batch is closed.</div>}
           {anyShort && <div style={{ fontSize: 12, color: "var(--red)", fontWeight: 700 }}>⚠ Some recipes were short on stock — starting will post negative balances (fix with a Receive or opname).</div>}
           {error && <div style={{ color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
           <button onClick={start} disabled={busy} style={{ alignSelf: "flex-start", padding: "12px 22px", borderRadius: 12, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 14.5, cursor: busy ? "default" : "pointer" }}>
@@ -319,9 +329,13 @@ function BatchBuilder({ recipes }: { recipes: RecipeRow[] }) {
 }
 
 // ------------------------------------------------ Close a cycle (per-line yields)
+// Super-admin only. When the batch was opened without labor (staff-started),
+// the close form asks for it — that's the "1 more input" for Heral's batches.
 function CloseCycle({ batch }: { batch: OpenBatchCycleRow }) {
   const router = useRouter();
+  const needsLabor = batch.laborCost == null;
   const [open, setOpen] = useState(false);
+  const [laborCost, setLaborCost] = useState("");
   const [yields, setYields] = useState<Record<string, string>>(() =>
     Object.fromEntries(batch.lines.map((l) => [l.id, String(Math.round(l.plannedQty))])),
   );
@@ -332,12 +346,17 @@ function CloseCycle({ batch }: { batch: OpenBatchCycleRow }) {
     setError(null);
     const payload = batch.lines.map((l) => ({ lineId: l.id, actualYield: Number(yields[l.id]) }));
     if (payload.some((y) => !Number.isFinite(y.actualYield) || y.actualYield <= 0)) return setError("Enter an actual yield for every recipe.");
+    let lc: number | null = null;
+    if (needsLabor) {
+      lc = Number(laborCost || 0);
+      if (!Number.isFinite(lc) || lc < 0) return setError("Enter the labor cost (0 or more).");
+    }
     setBusy(true);
     try {
       const res = await fetch("/api/admin/ops/batch/close-cycle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId: batch.id, yields: payload }),
+        body: JSON.stringify({ batchId: batch.id, yields: payload, laborCost: lc }),
       });
       const data = await res.json();
       if (!res.ok) setError(data.error ?? "Could not close the batch.");
@@ -374,11 +393,14 @@ function CloseCycle({ batch }: { batch: OpenBatchCycleRow }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <div style={{ fontWeight: 800, fontSize: 14 }}>
           Batch · {batch.lines.length} recipe{batch.lines.length > 1 ? "s" : ""}
-          <span style={{ color: "var(--soft)", fontWeight: 600, fontSize: 12.5 }}> · labor {rupiah(batch.laborCost)}</span>
+          <span style={{ color: "var(--soft)", fontWeight: 600, fontSize: 12.5 }}>
+            {batch.startedByName ? ` · started by ${batch.startedByName}` : ""}
+            {needsLabor ? " · labor to enter" : ` · labor ${rupiah(batch.laborCost as number)}`}
+          </span>
         </div>
         {!open && (
           <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={() => setOpen(true)} style={{ padding: "7px 14px", borderRadius: 10, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>Bake & close</button>
+            <button onClick={() => setOpen(true)} style={{ padding: "7px 14px", borderRadius: 10, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>Bake &amp; close</button>
             <button onClick={cancel} disabled={busy} style={{ padding: "7px 12px", borderRadius: 10, border: "1.5px solid var(--line)", background: "#fff", color: "var(--red)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
           </div>
         )}
@@ -404,6 +426,12 @@ function CloseCycle({ batch }: { batch: OpenBatchCycleRow }) {
 
       {open && (
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+          {needsLabor && (
+            <div style={{ maxWidth: 260 }}>
+              <label style={labelStyle}>Labor cost — whole batch (Rp)</label>
+              <input type="number" inputMode="numeric" min="0" style={inputStyle} value={laborCost} onChange={(e) => setLaborCost(e.target.value)} placeholder="split across recipes" />
+            </div>
+          )}
           {error && <div style={{ color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <button onClick={submit} disabled={busy} style={{ padding: "10px 18px", borderRadius: 10, border: "none", background: busy ? "var(--soft)" : "var(--green)", color: "#fff", fontWeight: 800, fontSize: 13.5, cursor: busy ? "default" : "pointer" }}>{busy ? "Closing…" : "Confirm close"}</button>
@@ -412,6 +440,26 @@ function CloseCycle({ batch }: { batch: OpenBatchCycleRow }) {
         </div>
       )}
       {!open && error && <div style={{ marginTop: 8, color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
+    </div>
+  );
+}
+
+// A staff member's read-only view of an open batch (no close/cancel, no cost).
+function StaffOpenCycle({ batch }: { batch: OpenBatchCycleRow }) {
+  return (
+    <div style={{ border: "1.5px solid var(--line)", borderRadius: 12, padding: 12, background: "var(--surface2)" }}>
+      <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>
+        Batch · {batch.lines.length} recipe{batch.lines.length > 1 ? "s" : ""}
+        <span style={{ color: "var(--soft)", fontWeight: 600, fontSize: 12.5 }}> · in progress</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {batch.lines.map((l) => (
+          <div key={l.id}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>{l.name} <span style={{ color: "var(--soft)", fontWeight: 600, fontSize: 12 }}>· planned {qtyFmt(l.plannedQty)}</span></div>
+            <div style={{ marginTop: 3 }}><TagPills line={l} /></div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -540,22 +588,46 @@ function CycleHistoryCard({ batch }: { batch: BatchCycleHistoryRow }) {
 
 // ------------------------------------------------ Panel
 export default function ProductionPanel({
+  role = "super_admin",
   recipes,
   openBatches,
   history,
   openCycles,
   cycleHistory,
 }: {
+  role?: OpsRole;
   recipes: RecipeRow[];
   openBatches: OpenBatchRow[];
   history: BatchHistoryRow[];
   openCycles: OpenBatchCycleRow[];
   cycleHistory: BatchCycleHistoryRow[];
 }) {
+  const isStaff = role === "staff";
   const openCount = openBatches.length + openCycles.length;
+
+  // Staff: build a batch + watch open ones (read-only). No close/cancel, no
+  // cost history, no legacy super-admin batches.
+  if (isStaff) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        <BatchBuilder recipes={recipes} role={role} />
+        <div>
+          <div style={sectionLabel}>OPEN BATCHES · {openCycles.length}</div>
+          {openCycles.length === 0 ? (
+            <div style={{ padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5, ...card }}>No batches in progress.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {openCycles.map((b) => <StaffOpenCycle key={b.id} batch={b} />)}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <BatchBuilder recipes={recipes} />
+      <BatchBuilder recipes={recipes} role={role} />
 
       <div>
         <div style={sectionLabel}>OPEN BATCHES · {openCount}</div>

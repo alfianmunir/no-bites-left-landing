@@ -1,6 +1,6 @@
 /** POST /api/admin/ops/receive — create + receive a purchase (Ops Phase 1). */
 import { NextResponse } from "next/server";
-import { isAdminSession } from "@/lib/adminAuth";
+import { isOpsUser } from "@/lib/adminAuth";
 import { opsEnabled, receivePurchase, type ReceiveLineInput } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
@@ -15,7 +15,7 @@ interface Body {
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
-  if (!(await isAdminSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!(await isOpsUser())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!opsEnabled) return NextResponse.json({ error: "Ops requires a database connection (DATABASE_URL)." }, { status: 503 });
 
   let body: Body;

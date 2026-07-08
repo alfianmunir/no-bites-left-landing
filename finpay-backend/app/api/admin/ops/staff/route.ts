@@ -1,7 +1,7 @@
 /** POST /api/admin/ops/staff — create a staff member or toggle active (M5 HR). */
 import { NextResponse } from "next/server";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, createStaff, setStaffActive } from "@/lib/opsStore";
+import { opsEnabled, createStaff, setStaffActive, setStaffPassword, disableStaffLogin } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
@@ -22,6 +22,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     payType?: string;
     rate?: number | string;
     batchBonus?: number | string;
+    password?: string;
   };
   try {
     body = await req.json();
@@ -36,6 +37,26 @@ export async function POST(req: Request): Promise<NextResponse> {
       const ok = await setStaffActive(staffId, body.active !== false);
       if (!ok) return NextResponse.json({ error: "staff not found" }, { status: 404 });
       logOrder("ops_staff_toggle", { staffId, active: body.active !== false });
+      return NextResponse.json({ ok: true });
+    }
+
+    if (body.action === "setlogin") {
+      const staffId = typeof body.staffId === "string" ? body.staffId : "";
+      const password = (body.password ?? "").toString();
+      if (!staffId) return NextResponse.json({ error: "missing staff" }, { status: 400 });
+      if (password.length < 4) return NextResponse.json({ error: "password must be at least 4 characters" }, { status: 400 });
+      const ok = await setStaffPassword(staffId, password);
+      if (!ok) return NextResponse.json({ error: "staff not found" }, { status: 404 });
+      logOrder("ops_staff_setlogin", { staffId });
+      return NextResponse.json({ ok: true });
+    }
+
+    if (body.action === "disablelogin") {
+      const staffId = typeof body.staffId === "string" ? body.staffId : "";
+      if (!staffId) return NextResponse.json({ error: "missing staff" }, { status: 400 });
+      const ok = await disableStaffLogin(staffId);
+      if (!ok) return NextResponse.json({ error: "staff not found" }, { status: 404 });
+      logOrder("ops_staff_disablelogin", { staffId });
       return NextResponse.json({ ok: true });
     }
 

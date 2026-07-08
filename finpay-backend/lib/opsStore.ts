@@ -19,6 +19,7 @@
 import { env } from "./env";
 import { DEFAULT_PRICING_CONFIG, type PricingConfig } from "./opsPricing";
 import { assemblePnL, monthlyDepreciation, type PnL } from "./opsFinance";
+import { hashPassword, verifyPassword } from "./password";
 
 /** Ops screens need the real database — there is no file-store fallback. */
 export const opsEnabled = Boolean(env.databaseUrl);
@@ -154,7 +155,8 @@ export interface BatchLineRow {
 export interface OpenBatchCycleRow {
   id: string;
   createdAt: string;
-  laborCost: number;
+  laborCost: number | null; // null = opened without labor (staff-started); set at close
+  startedByName: string | null; // null = super-admin
   lines: BatchLineRow[];
 }
 
@@ -630,8 +632,9 @@ export async function closeBatch(
  *  line's scaled BOM (FEFO) in one transaction. Returns the new batch id. */
 export async function startBatchCycle(
   lines: BatchLineInput[],
-  laborCost: number,
+  laborCost: number | null,
   laborMinutes: number | null,
+  createdByStaff: string | null = null,
 ): Promise<string> {
   const p = await pool();
   const payload = lines.map((l) => ({
@@ -641,23 +644,26 @@ export async function startBatchCycle(
     qty_kol: l.qtyKol,
     qty_rnd: l.qtyRnd,
   }));
-  const { rows } = await p.query(`SELECT ops.start_batch_cycle($1::jsonb, $2, $3) AS batch`, [
+  const { rows } = await p.query(`SELECT ops.start_batch_cycle($1::jsonb, $2, $3, $4) AS batch`, [
     JSON.stringify(payload),
     laborCost,
     laborMinutes,
+    createdByStaff,
   ]);
   return rows[0].batch as string;
 }
 
 /** Close a cycle — applies per-line actual yields, costs each line, posts the
- *  for-sale finished goods and rolls std_cost. Returns the batch's total cost. */
+ *  for-sale finished goods and rolls std_cost. laborCost fills in the labor for
+ *  batches opened without it (staff-started). Returns the batch's total cost. */
 export async function closeBatchCycle(
   batchId: string,
   yields: { lineId: string; actualYield: number }[],
+  laborCost: number | null = null,
 ): Promise<number> {
   const p = await pool();
   const payload = yields.map((y) => ({ line_id: y.lineId, actual_yield: y.actualYield }));
-  const { rows } = await p.query(`SELECT ops.close_batch_cycle($1, $2::jsonb) AS total`, [batchId, JSON.stringify(payload)]);
+  const { rows } = await p.query(`SELECT ops.close_batch_cycle($1, $2::jsonb, $3) AS total`, [batchId, JSON.stringify(payload), laborCost]);
   return num(rows[0].total);
 }
 
@@ -697,8 +703,9 @@ async function loadCycleLines(batchIds: string[]): Promise<Map<string, BatchLine
 export async function listOpenBatchCycles(): Promise<OpenBatchCycleRow[]> {
   const p = await pool();
   const { rows } = await p.query(
-    `SELECT pb.id, pb.created_at, COALESCE(pb.labor_cost, 0) AS labor_cost
+    `SELECT pb.id, pb.created_at, pb.labor_cost, s.name AS started_by
        FROM ops.production_batches pb
+       LEFT JOIN ops.staff s ON s.id = pb.created_by_staff
       WHERE pb.status = 'in_progress' AND pb.is_cycle = true
       ORDER BY pb.created_at ASC`,
   );
@@ -706,7 +713,8 @@ export async function listOpenBatchCycles(): Promise<OpenBatchCycleRow[]> {
   return rows.map((r) => ({
     id: r.id as string,
     createdAt: new Date(r.created_at as string).toISOString(),
-    laborCost: num(r.labor_cost),
+    laborCost: r.labor_cost == null ? null : num(r.labor_cost),
+    startedByName: (r.started_by as string) ?? null,
     lines: lines.get(r.id as string) ?? [],
   }));
 }
@@ -1338,6 +1346,7 @@ export interface StaffRow {
   batchBonus: number;
   equityPct: number | null;
   active: boolean;
+  canLogin: boolean;
 }
 
 export interface PayrollPreviewLine {
@@ -1364,7 +1373,7 @@ export interface PayrollRunRow {
 export async function listStaff(): Promise<StaffRow[]> {
   const p = await pool();
   const { rows } = await p.query(
-    `SELECT id, name, role, pay_type, rate, batch_bonus, equity_pct, active
+    `SELECT id, name, role, pay_type, rate, batch_bonus, equity_pct, active, can_login
        FROM ops.staff ORDER BY active DESC, name`,
   );
   return rows.map((r) => ({
@@ -1376,7 +1385,66 @@ export async function listStaff(): Promise<StaffRow[]> {
     batchBonus: num(r.batch_bonus),
     equityPct: r.equity_pct == null ? null : num(r.equity_pct),
     active: Boolean(r.active),
+    canLogin: Boolean(r.can_login),
   }));
+}
+
+/** Match a login password against every enabled staff account (password-only
+ *  login — the password identifies the staff member). Returns the staff on a
+ *  hit, else null. Scrypt-verified (lib/password.ts). */
+export async function findStaffLogin(password: string): Promise<{ id: string; name: string } | null> {
+  if (!password) return null;
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT id, name, password_hash FROM ops.staff WHERE can_login = true AND active AND password_hash IS NOT NULL`,
+  );
+  for (const r of rows) {
+    if (verifyPassword(password, r.password_hash as string)) {
+      return { id: r.id as string, name: r.name as string };
+    }
+  }
+  return null;
+}
+
+/** Set (or reset) a staff member's login password and enable login. */
+export async function setStaffPassword(staffId: string, password: string): Promise<boolean> {
+  const p = await pool();
+  const { rowCount } = await p.query(
+    `UPDATE ops.staff SET password_hash = $2, can_login = true WHERE id = $1`,
+    [staffId, hashPassword(password)],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Disable a staff member's login (keeps the hash cleared). */
+export async function disableStaffLogin(staffId: string): Promise<boolean> {
+  const p = await pool();
+  const { rowCount } = await p.query(
+    `UPDATE ops.staff SET can_login = false, password_hash = NULL WHERE id = $1`,
+    [staffId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** A staff member's own attendance summary for the current month + whether
+ *  today is already logged (drives the staff "Log day" dashboard). */
+export async function getStaffMonthAttendance(
+  staffId: string,
+  monthStart: string,
+  monthEnd: string,
+  today: string,
+): Promise<{ name: string; daysThisMonth: number; loggedToday: boolean }> {
+  const p = await pool();
+  const [staff, days, todayRow] = await Promise.all([
+    p.query(`SELECT name FROM ops.staff WHERE id = $1`, [staffId]),
+    p.query(`SELECT count(DISTINCT date)::int AS n FROM ops.attendance WHERE staff_id = $1 AND date BETWEEN $2 AND $3`, [staffId, monthStart, monthEnd]),
+    p.query(`SELECT 1 FROM ops.attendance WHERE staff_id = $1 AND date = $2 LIMIT 1`, [staffId, today]),
+  ]);
+  return {
+    name: (staff.rows[0]?.name as string) ?? "",
+    daysThisMonth: num(days.rows[0]?.n),
+    loggedToday: (todayRow.rowCount ?? 0) > 0,
+  };
 }
 
 export async function createStaff(input: {
@@ -1401,13 +1469,14 @@ export async function setStaffActive(staffId: string, active: boolean): Promise<
   return (rowCount ?? 0) > 0;
 }
 
-/** Log a worked day (attendance). One row per staff per date (idempotent). */
-export async function logAttendance(staffId: string, date: string): Promise<void> {
+/** Log a worked day (attendance). One row per staff per date (idempotent).
+ *  source 'admin' when a super-admin logs it, 'self' when the staff member does. */
+export async function logAttendance(staffId: string, date: string, source: "admin" | "self" = "admin"): Promise<void> {
   const p = await pool();
   await p.query(
-    `INSERT INTO ops.attendance (staff_id, date, source) VALUES ($1, $2, 'admin')
+    `INSERT INTO ops.attendance (staff_id, date, source) VALUES ($1, $2, $3)
      ON CONFLICT DO NOTHING`,
-    [staffId, date],
+    [staffId, date, source],
   );
 }
 

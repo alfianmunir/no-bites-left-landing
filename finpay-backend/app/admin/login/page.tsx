@@ -1,46 +1,17 @@
-"use client";
+import { redirect } from "next/navigation";
+import { getOpsSession } from "@/lib/adminAuth";
+import LoginForm from "./LoginForm";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export default function AdminLoginPage() {
-  const router = useRouter();
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+export default async function AdminLoginPage() {
+  // Already signed in? Send them to their home. This also means a staff member
+  // who hits a super-admin-only page (which redirects here) is forwarded on to
+  // their own dashboard rather than shown a login form.
+  const session = await getOpsSession();
+  if (session?.role === "super_admin") redirect("/admin");
+  if (session?.role === "staff") redirect("/admin/ops/today");
 
-  async function submit() {
-    setBusy(true);
-    setError(null);
-    const res = await fetch("/api/admin/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-    });
-    if (res.ok) {
-      router.push("/admin");
-      router.refresh();
-    } else {
-      setError("Incorrect password.");
-      setBusy(false);
-    }
-  }
-
-  return (
-    <main style={{ maxWidth: 360, margin: "80px auto", padding: "0 20px" }}>
-      <div className="font-display" style={{ fontSize: 20, color: "var(--choco)", marginBottom: 16 }}>Admin sign in</div>
-      <input
-        type="password"
-        className="field-input"
-        placeholder="Password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && submit()}
-      />
-      {error && <div style={{ color: "var(--red)", fontSize: 13, marginTop: 8 }}>{error}</div>}
-      <button className="btn-calm" style={{ marginTop: 14 }} disabled={busy || !password} onClick={submit}>
-        {busy ? "Signing in…" : "Sign in"}
-      </button>
-    </main>
-  );
+  return <LoginForm />;
 }

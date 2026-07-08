@@ -1,7 +1,7 @@
 /** POST /api/admin/ops/batch/start-cycle — open a multi-recipe production cycle
  *  (consumes every line's BOM). Body: { lines: [...], laborCost, laborMinutes }. */
 import { NextResponse } from "next/server";
-import { isAdminSession } from "@/lib/adminAuth";
+import { getOpsSession } from "@/lib/adminAuth";
 import { opsEnabled, startBatchCycle, type BatchLineInput } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
@@ -16,8 +16,10 @@ interface RawLine {
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
-  if (!(await isAdminSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const session = await getOpsSession();
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!opsEnabled) return NextResponse.json({ error: "Ops requires a database connection (DATABASE_URL)." }, { status: 503 });
+  const isStaff = session.role === "staff";
 
   let body: { lines?: RawLine[]; laborCost?: number | string; laborMinutes?: number | string | null };
   try {
@@ -45,14 +47,21 @@ export async function POST(req: Request): Promise<NextResponse> {
     lines.push({ recipeId, plannedQty, qtySample, qtyKol, qtyRnd });
   }
 
-  const laborCost = Number(body.laborCost ?? 0);
+  // Staff open batches WITHOUT labor (left null; the super-admin sets it at
+  // close). Super-admin enters labor up front as before.
   const laborMinutes = body.laborMinutes == null || body.laborMinutes === "" ? null : Number(body.laborMinutes);
-  if (!Number.isFinite(laborCost) || laborCost < 0) return NextResponse.json({ error: "enter a valid labor cost (0 or more)" }, { status: 400 });
+  let laborCost: number | null = null;
+  if (!isStaff) {
+    laborCost = Number(body.laborCost ?? 0);
+    if (!Number.isFinite(laborCost) || laborCost < 0) return NextResponse.json({ error: "enter a valid labor cost (0 or more)" }, { status: 400 });
+  }
   if (laborMinutes != null && (!Number.isFinite(laborMinutes) || laborMinutes < 0)) return NextResponse.json({ error: "labor minutes must be 0 or more" }, { status: 400 });
 
+  const createdByStaff = isStaff ? (session.staffId ?? null) : null;
+
   try {
-    const batchId = await startBatchCycle(lines, laborCost, laborMinutes);
-    logOrder("ops_batch_cycle_start", { batchId, lines: lines.length, laborCost });
+    const batchId = await startBatchCycle(lines, laborCost, laborMinutes, createdByStaff);
+    logOrder("ops_batch_cycle_start", { batchId, lines: lines.length, laborCost, createdByStaff });
     return NextResponse.json({ ok: true, batchId });
   } catch (e) {
     logOrder("ops_batch_cycle_start_failed", { error: String(e) });

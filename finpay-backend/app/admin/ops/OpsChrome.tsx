@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { getOpsSession, type OpsRole } from "@/lib/adminAuth";
 
 /** Shared shell + tab nav for the Ops (inventory) screens. Mobile-first: these
  *  are used standing in the kitchen, phone in hand (PRD §7). */
@@ -69,6 +70,30 @@ const GROUPS: Group[] = [
   },
 ];
 
+// Staff (e.g. Heral) see a scoped subset: log-day home + QoH stock, receive,
+// opname, and starting production batches. No finance/HR/orders, no items/waste/
+// recipes. Server-side gates enforce this too — the nav just reflects it.
+const STAFF_GROUPS: Group[] = [
+  {
+    label: "Stock",
+    icon: "📦",
+    tabs: [
+      { href: "/admin/ops/stock", label: "Stock" },
+      { href: "/admin/ops/receive", label: "Receive" },
+      { href: "/admin/ops/opname", label: "Opname" },
+    ],
+  },
+  {
+    label: "Production",
+    icon: "🥐",
+    tabs: [{ href: "/admin/ops/production", label: "Batches" }],
+  },
+];
+
+function groupsFor(role: OpsRole): Group[] {
+  return role === "staff" ? STAFF_GROUPS : GROUPS;
+}
+
 const chipBase: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
@@ -91,7 +116,7 @@ function chipStyle(on: boolean): React.CSSProperties {
   };
 }
 
-export function OpsShell({
+export async function OpsShell({
   active,
   title,
   subtitle,
@@ -102,7 +127,11 @@ export function OpsShell({
   subtitle?: string;
   children: ReactNode;
 }) {
-  const activeGroup = GROUPS.find((g) => g.tabs.some((t) => t.href === active)) ?? null;
+  const session = await getOpsSession();
+  const role: OpsRole = session?.role === "staff" ? "staff" : "super_admin";
+  const groups = groupsFor(role);
+
+  const activeGroup = groups.find((g) => g.tabs.some((t) => t.href === active)) ?? null;
   const onHome = active === HOME.href;
 
   const showSub = activeGroup && activeGroup.tabs.length > 1;
@@ -116,7 +145,9 @@ export function OpsShell({
             <div style={{ fontWeight: 900, fontSize: 18, color: "var(--choco)" }}>{title}</div>
             {subtitle && <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>{subtitle}</div>}
           </div>
-          <Link href="/admin" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>‹ Queue</Link>
+          {role === "super_admin" && (
+            <Link href="/admin" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>‹ Queue</Link>
+          )}
         </div>
 
         {/* Row 1 — Today + category chips (each links to its first screen). */}
@@ -125,7 +156,7 @@ export function OpsShell({
             <span aria-hidden style={{ fontSize: 14 }}>🗓️</span>
             {HOME.label}
           </Link>
-          {GROUPS.map((g) => (
+          {groups.map((g) => (
             <Link key={g.label} href={g.tabs[0].href} style={chipStyle(activeGroup?.label === g.label)}>
               <span aria-hidden style={{ fontSize: 14 }}>{g.icon}</span>
               {g.label}

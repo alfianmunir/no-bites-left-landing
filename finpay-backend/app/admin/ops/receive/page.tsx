@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { isAdminSession } from "@/lib/adminAuth";
+import { isOpsUser } from "@/lib/adminAuth";
 import { opsEnabled, listItems, listSuppliers } from "@/lib/opsStore";
 import { OpsShell, DbNotice } from "../OpsChrome";
 import ReceiveForm from "./ReceiveForm";
@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export default async function OpsReceivePage() {
-  if (!(await isAdminSession())) redirect("/admin/login");
+  if (!(await isOpsUser())) redirect("/admin/login");
 
   if (!opsEnabled) {
     return (

@@ -1,13 +1,13 @@
 /** POST /api/admin/ops/opname — post a stock count variance (Ops Phase 1). */
 import { NextResponse } from "next/server";
-import { isAdminSession } from "@/lib/adminAuth";
+import { isOpsUser } from "@/lib/adminAuth";
 import { opsEnabled, postOpname } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request): Promise<NextResponse> {
-  if (!(await isAdminSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!(await isOpsUser())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!opsEnabled) return NextResponse.json({ error: "Ops requires a database connection (DATABASE_URL)." }, { status: 503 });
 
   let body: { itemId?: string; countedQty?: number | string; note?: string | null };

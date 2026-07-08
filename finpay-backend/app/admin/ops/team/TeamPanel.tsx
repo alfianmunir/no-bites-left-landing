@@ -28,6 +28,8 @@ function StaffSection({ staff, today }: { staff: StaffRow[]; today: string }) {
   const [attDate, setAttDate] = useState(today);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loginFor, setLoginFor] = useState<string | null>(null);
+  const [pwd, setPwd] = useState("");
 
   const post = async (url: string, body: unknown) => {
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -55,6 +57,24 @@ function StaffSection({ staff, today }: { staff: StaffRow[]; today: string }) {
   const logDay = async (s: StaffRow) => {
     setBusy("att-" + s.id);
     await post("/api/admin/ops/attendance", { staffId: s.id, date: attDate });
+    setBusy(null);
+    router.refresh();
+  };
+
+  const saveLogin = async (s: StaffRow) => {
+    setError(null);
+    if (pwd.length < 4) return setError("Password must be at least 4 characters.");
+    setBusy("login-" + s.id);
+    const { ok, d } = await post("/api/admin/ops/staff", { action: "setlogin", staffId: s.id, password: pwd });
+    setBusy(null);
+    if (!ok) setError(d.error ?? "Could not set login.");
+    else { setPwd(""); setLoginFor(null); router.refresh(); }
+  };
+
+  const disableLogin = async (s: StaffRow) => {
+    if (!confirm(`Disable login for ${s.name}?`)) return;
+    setBusy("login-" + s.id);
+    await post("/api/admin/ops/staff", { action: "disablelogin", staffId: s.id });
     setBusy(null);
     router.refresh();
   };
@@ -99,17 +119,33 @@ function StaffSection({ staff, today }: { staff: StaffRow[]; today: string }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {staff.map((s) => (
-          <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "10px 12px", border: "1.5px solid var(--line)", borderRadius: 12, background: s.active ? "#fff" : "var(--surface2)", flexWrap: "wrap", opacity: s.active ? 1 : 0.6 }}>
-            <div>
-              <span style={{ fontWeight: 800, fontSize: 14 }}>{s.name}</span>
-              <span style={{ color: "var(--soft)", fontSize: 12.5 }}> · {s.role} · {rupiah(s.rate)} {PAY_LABEL[s.payType] ?? s.payType}{s.batchBonus > 0 ? ` · +${rupiah(s.batchBonus)}/batch` : ""}</span>
+          <div key={s.id} style={{ padding: "10px 12px", border: "1.5px solid var(--line)", borderRadius: 12, background: s.active ? "#fff" : "var(--surface2)", opacity: s.active ? 1 : 0.6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <span style={{ fontWeight: 800, fontSize: 14 }}>{s.name}</span>
+                {s.canLogin && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 900, color: "var(--green)", background: "var(--tint-success)", borderRadius: 999, padding: "2px 8px" }}>LOGIN</span>}
+                <span style={{ color: "var(--soft)", fontSize: 12.5 }}> · {s.role} · {rupiah(s.rate)} {PAY_LABEL[s.payType] ?? s.payType}{s.batchBonus > 0 ? ` · +${rupiah(s.batchBonus)}/batch` : ""}</span>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {s.active && (
+                  <button onClick={() => logDay(s)} disabled={busy === "att-" + s.id} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>{busy === "att-" + s.id ? "…" : "Log day"}</button>
+                )}
+                <button onClick={() => { setLoginFor(loginFor === s.id ? null : s.id); setPwd(""); setError(null); }} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--line)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>{s.canLogin ? "Login…" : "Set login"}</button>
+                <button onClick={() => toggle(s)} disabled={busy === s.id} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--line)", background: "#fff", color: "var(--soft)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>{s.active ? "Deactivate" : "Reactivate"}</button>
+              </div>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {s.active && (
-                <button onClick={() => logDay(s)} disabled={busy === "att-" + s.id} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>{busy === "att-" + s.id ? "…" : "Log day"}</button>
-              )}
-              <button onClick={() => toggle(s)} disabled={busy === s.id} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--line)", background: "#fff", color: "var(--soft)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>{s.active ? "Deactivate" : "Reactivate"}</button>
-            </div>
+
+            {loginFor === s.id && (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 8 }}>
+                <label style={labelStyle}>{s.canLogin ? "Reset login password" : "Set a login password"}</label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <input type="text" autoComplete="off" style={{ ...inputStyle, width: "auto", flex: "1 1 180px" }} value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder="new password" />
+                  <button onClick={() => saveLogin(s)} disabled={busy === "login-" + s.id} style={{ padding: "9px 16px", borderRadius: 10, border: "none", background: "var(--choco)", color: "#fff", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>{busy === "login-" + s.id ? "Saving…" : "Save"}</button>
+                  {s.canLogin && <button onClick={() => disableLogin(s)} disabled={busy === "login-" + s.id} style={{ padding: "9px 14px", borderRadius: 10, border: "1.5px solid var(--line)", background: "#fff", color: "var(--red)", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>Disable</button>}
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--soft)" }}>They sign in at the same admin login with just this password. Give them: their password (no username needed).</div>
+              </div>
+            )}
           </div>
         ))}
       </div>

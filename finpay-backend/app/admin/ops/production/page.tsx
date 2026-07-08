@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { isAdminSession } from "@/lib/adminAuth";
+import { getOpsSession } from "@/lib/adminAuth";
 import {
   opsEnabled,
   listRecipes,
@@ -15,7 +15,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export default async function OpsProductionPage() {
-  if (!(await isAdminSession())) redirect("/admin/login");
+  const session = await getOpsSession();
+  if (!session) redirect("/admin/login");
+  const staff = session.role === "staff";
 
   if (!opsEnabled) {
     return (
@@ -25,19 +27,26 @@ export default async function OpsProductionPage() {
     );
   }
 
+  // Staff (Heral) only build batches and watch what's open — no cost history,
+  // no legacy single-recipe batches (which are super-admin-owned).
   const [recipes, openBatches, history, openCycles, cycleHistory] = await Promise.all([
     listRecipes(),
-    listOpenBatches(),
-    listBatchHistory(),
+    staff ? Promise.resolve([]) : listOpenBatches(),
+    staff ? Promise.resolve([]) : listBatchHistory(),
     listOpenBatchCycles(),
-    listBatchCycleHistory(),
+    staff ? Promise.resolve([]) : listBatchCycleHistory(),
   ]);
   const openCount = openBatches.length + openCycles.length;
-  const subtitle = openCount > 0 ? `${openCount} in progress · ${cycleHistory.length + history.length} recent` : "Build a batch — add recipes, check stock, then bake & cost it";
+  const subtitle = staff
+    ? "Build a batch — add recipes, check stock, then start it"
+    : openCount > 0
+      ? `${openCount} in progress · ${cycleHistory.length + history.length} recent`
+      : "Build a batch — add recipes, check stock, then bake & cost it";
 
   return (
     <OpsShell active="/admin/ops/production" title="Production" subtitle={subtitle}>
       <ProductionPanel
+        role={staff ? "staff" : "super_admin"}
         recipes={recipes}
         openBatches={openBatches}
         history={history}

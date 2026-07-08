@@ -1,5 +1,6 @@
 /** POST /api/admin/ops/batch/close-cycle — finalise a production cycle
- *  (per-line yields → cost + finished goods). Body: { batchId, yields: [...] }. */
+ *  (per-line yields → cost + finished goods). Super-admin only; laborCost fills
+ *  in labor for staff-started batches. Body: { batchId, yields:[...], laborCost }. */
 import { NextResponse } from "next/server";
 import { isAdminSession } from "@/lib/adminAuth";
 import { opsEnabled, closeBatchCycle } from "@/lib/opsStore";
@@ -16,7 +17,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!(await isAdminSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!opsEnabled) return NextResponse.json({ error: "Ops requires a database connection (DATABASE_URL)." }, { status: 503 });
 
-  let body: { batchId?: string; yields?: RawYield[] };
+  let body: { batchId?: string; yields?: RawYield[]; laborCost?: number | string | null };
   try {
     body = await req.json();
   } catch {
@@ -38,9 +39,15 @@ export async function POST(req: Request): Promise<NextResponse> {
     yields.push({ lineId, actualYield });
   }
 
+  let laborCost: number | null = null;
+  if (body.laborCost != null && body.laborCost !== "") {
+    laborCost = Number(body.laborCost);
+    if (!Number.isFinite(laborCost) || laborCost < 0) return NextResponse.json({ error: "enter a valid labor cost (0 or more)" }, { status: 400 });
+  }
+
   try {
-    const total = await closeBatchCycle(batchId, yields);
-    logOrder("ops_batch_cycle_close", { batchId, lines: yields.length, total });
+    const total = await closeBatchCycle(batchId, yields, laborCost);
+    logOrder("ops_batch_cycle_close", { batchId, lines: yields.length, total, laborCost });
     return NextResponse.json({ ok: true, total });
   } catch (e) {
     logOrder("ops_batch_cycle_close_failed", { batchId, error: String(e) });

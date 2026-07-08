@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { isAdminSession } from "@/lib/adminAuth";
+import { getOpsSession } from "@/lib/adminAuth";
 import {
   opsEnabled,
   getCashPosition,
@@ -12,11 +12,13 @@ import {
   listWaste30d,
   listPricingProducts,
   getPricingConfig,
+  getStaffMonthAttendance,
 } from "@/lib/opsStore";
 import { monthRange } from "@/lib/opsFinance";
 import { computeSkuPricing } from "@/lib/opsPricing";
 import { agingBucket } from "@/lib/opsOrderMath";
 import { OpsShell, DbNotice, rupiah } from "../OpsChrome";
+import StaffToday from "./StaffToday";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,7 +35,8 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
 }
 
 export default async function OpsTodayPage() {
-  if (!(await isAdminSession())) redirect("/admin/login");
+  const session = await getOpsSession();
+  if (!session) redirect("/admin/login");
 
   if (!opsEnabled) {
     return (
@@ -45,6 +48,16 @@ export default async function OpsTodayPage() {
 
   const month = monthRange();
   const today = new Date().toISOString().slice(0, 10);
+
+  // Staff (e.g. Heral) get a focused log-day dashboard, not the finance overview.
+  if (session.role === "staff" && session.staffId) {
+    const att = await getStaffMonthAttendance(session.staffId, month.start, month.end, today);
+    return (
+      <OpsShell active="/admin/ops/today" title="Today" subtitle={month.label}>
+        <StaffToday name={att.name} daysThisMonth={att.daysThisMonth} loggedToday={att.loggedToday} todayLabel={today} />
+      </OpsShell>
+    );
+  }
   const [cash, pnl, reorder, expiring, batches, invoices, waste, products, cfg] = await Promise.all([
     getCashPosition(),
     getPnL(month.start, month.end),

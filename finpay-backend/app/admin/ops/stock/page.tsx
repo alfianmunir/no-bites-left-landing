@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { isAdminSession } from "@/lib/adminAuth";
+import { getOpsSession } from "@/lib/adminAuth";
 import { opsEnabled, listStockBalance, listReorderAlerts, listExpiringLots } from "@/lib/opsStore";
 import { OpsShell, DbNotice, rupiah, qty } from "../OpsChrome";
 
@@ -10,7 +10,10 @@ const th: React.CSSProperties = { textAlign: "left", padding: "9px 12px", fontSi
 const td: React.CSSProperties = { padding: "10px 12px", fontSize: 13.5, color: "var(--ink)", borderBottom: "1px solid var(--line)", whiteSpace: "nowrap" };
 
 export default async function OpsStockPage() {
-  if (!(await isAdminSession())) redirect("/admin/login");
+  const session = await getOpsSession();
+  if (!session) redirect("/admin/login");
+  // Staff see quantity-on-hand only — no cost / valuation ("finance view").
+  const staff = session.role === "staff";
 
   if (!opsEnabled) {
     return (
@@ -22,9 +25,10 @@ export default async function OpsStockPage() {
 
   const [balance, alerts, expiring] = await Promise.all([listStockBalance(), listReorderAlerts(), listExpiringLots()]);
   const totalValue = balance.reduce((s, r) => s + r.stockValue, 0);
+  const subtitle = staff ? `${balance.length} items on hand` : `${balance.length} items · ${rupiah(totalValue)} on hand`;
 
   return (
-    <OpsShell active="/admin/ops/stock" title="Stock" subtitle={`${balance.length} items · ${rupiah(totalValue)} on hand`}>
+    <OpsShell active="/admin/ops/stock" title="Stock" subtitle={subtitle}>
       {(alerts.length > 0 || expiring.length > 0) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
           {alerts.length > 0 && (
@@ -58,13 +62,13 @@ export default async function OpsStockPage() {
         <div style={{ padding: 40, textAlign: "center", color: "var(--soft)", fontSize: 14 }}>No stock on hand yet — receive a purchase to get started.</div>
       ) : (
         <div style={{ overflowX: "auto", background: "#fff", border: "1.5px solid var(--line)", borderRadius: 14 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: staff ? 280 : 480 }}>
             <thead>
               <tr>
                 <th style={th}>Item</th>
                 <th style={{ ...th, textAlign: "right" }}>On hand</th>
-                <th style={{ ...th, textAlign: "right" }}>Avg cost</th>
-                <th style={{ ...th, textAlign: "right" }}>Value</th>
+                {!staff && <th style={{ ...th, textAlign: "right" }}>Avg cost</th>}
+                {!staff && <th style={{ ...th, textAlign: "right" }}>Value</th>}
               </tr>
             </thead>
             <tbody>
@@ -75,8 +79,8 @@ export default async function OpsStockPage() {
                     {r.belowReorder && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 900, color: "var(--red)" }}>LOW</span>}
                   </td>
                   <td style={{ ...td, textAlign: "right" }}>{qty(r.qtyOnHand)} <span style={{ color: "var(--soft)", fontSize: 12 }}>{r.unit}</span></td>
-                  <td style={{ ...td, textAlign: "right", color: "var(--soft)" }}>{rupiah(r.avgCost)}</td>
-                  <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{rupiah(r.stockValue)}</td>
+                  {!staff && <td style={{ ...td, textAlign: "right", color: "var(--soft)" }}>{rupiah(r.avgCost)}</td>}
+                  {!staff && <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{rupiah(r.stockValue)}</td>}
                 </tr>
               ))}
             </tbody>
