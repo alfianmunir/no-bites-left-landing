@@ -520,6 +520,63 @@ export async function postOpname(itemId: string, countedQty: number, note: strin
   return num(rows[0].variance);
 }
 
+export type OpnameCategory = "surplus" | "loss" | "equal";
+
+export interface OpnameAdjRow {
+  id: string;
+  name: string;
+  unit: string;
+  qty: number; // signed: + surplus, − loss, 0 equal
+  unitCost: number;
+  value: number; // qty * unitCost (signed)
+  category: OpnameCategory;
+  note: string | null;
+  at: string;
+}
+
+/** All opname adjustments (surplus / loss / equal), newest first. Reads the
+ *  opname_adj moves tagged ref_type='opname' (excludes batch-cancel reversals,
+ *  which reuse the opname_adj reason). qty>0 surplus, <0 loss, 0 equal (matched). */
+export async function listOpnameAdjustments(limit = 100): Promise<OpnameAdjRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT sm.id, i.name, i.unit, sm.qty, COALESCE(sm.unit_cost, 0) AS unit_cost, sm.note, sm.created_at
+       FROM ops.stock_moves sm
+       JOIN ops.items i ON i.id = sm.item_id
+      WHERE sm.reason = 'opname_adj' AND sm.ref_type = 'opname'
+        AND sm.created_at >= COALESCE(
+              (SELECT (value #>> '{}')::timestamptz FROM ops.config WHERE key = 'opname_since'),
+              '-infinity'::timestamptz)
+      ORDER BY sm.created_at DESC
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map((r) => {
+    const qty = num(r.qty);
+    const unitCost = num(r.unit_cost);
+    const category: OpnameCategory = qty > 0 ? "surplus" : qty < 0 ? "loss" : "equal";
+    return {
+      id: r.id as string,
+      name: r.name as string,
+      unit: r.unit as string,
+      qty,
+      unitCost,
+      value: qty * unitCost,
+      category,
+      note: (r.note as string) ?? null,
+      at: new Date(r.created_at as string).toISOString(),
+    };
+  });
+}
+
+/** The opname-counting cutoff (ISO date) — adjustments before this are ignored.
+ *  null if unset (then everything counts). */
+export async function getOpnameSince(): Promise<string | null> {
+  const p = await pool();
+  const { rows } = await p.query(`SELECT (value #>> '{}') AS since FROM ops.config WHERE key = 'opname_since'`);
+  return rows[0]?.since ? new Date(rows[0].since as string).toISOString().slice(0, 10) : null;
+}
+
 /** Ingredient/packaging waste (post_waste, drains lots FEFO at avg cost). Returns cost of wasted stock. */
 export async function postWaste(itemId: string, qty: number, note: string | null): Promise<number> {
   const p = await pool();
