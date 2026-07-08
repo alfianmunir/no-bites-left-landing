@@ -1514,6 +1514,80 @@ export async function markAssetOwned(input: {
   }
 }
 
+export interface AssetInput {
+  name: string;
+  category: string; // production | storage | other
+  status: string; // planned | owned  (created as register entry — no cash posted)
+  purchaseCost: number | null;
+  targetMonth: string | null;
+  usefulLifeMonths: number | null;
+  salvageValue: number;
+  purchasedAt: string | null;
+}
+
+/** Add an asset to the register. Pure register entry — no cash is posted (an
+ *  owned asset added here is assumed already paid; use "mark bought" on a
+ *  planned asset to post the capex cash-out). */
+export async function createAsset(input: AssetInput): Promise<string> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `INSERT INTO ops.assets (name, category, status, purchase_cost, target_month, useful_life_months, salvage_value, purchased_at)
+     VALUES ($1, $2, $3, $4, $5::date, $6, $7,
+             CASE WHEN $3 = 'owned' THEN COALESCE($8::date, CURRENT_DATE) ELSE $8::date END)
+     RETURNING id`,
+    [input.name.trim(), input.category, input.status, input.purchaseCost, input.targetMonth, input.usefulLifeMonths, input.salvageValue, input.purchasedAt],
+  );
+  return rows[0].id as string;
+}
+
+/** Edit an asset's descriptive fields (no cash side-effects; status changes go
+ *  through mark-bought / dispose). */
+export async function updateAsset(
+  id: string,
+  input: { name: string; category: string; purchaseCost: number | null; targetMonth: string | null; usefulLifeMonths: number | null; salvageValue: number },
+): Promise<boolean> {
+  const p = await pool();
+  const { rowCount } = await p.query(
+    `UPDATE ops.assets
+        SET name = $2, category = $3, purchase_cost = $4, target_month = $5::date,
+            useful_life_months = $6, salvage_value = $7
+      WHERE id = $1`,
+    [id, input.name.trim(), input.category, input.purchaseCost, input.targetMonth, input.usefulLifeMonths, input.salvageValue],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Retire an asset — stops depreciation. Ledger-safe (keeps the row + its capex
+ *  history) unlike a hard delete. */
+export async function disposeAsset(id: string): Promise<boolean> {
+  const p = await pool();
+  const { rowCount } = await p.query(`UPDATE ops.assets SET status = 'disposed' WHERE id = $1 AND status <> 'disposed'`, [id]);
+  return (rowCount ?? 0) > 0;
+}
+
+/** Hard-delete an asset, but only if no capex cash entry references it (i.e. it
+ *  was never bought through the system). Owned/bought assets return "blocked" —
+ *  dispose them instead so the cash ledger stays intact. */
+export async function deleteAsset(id: string): Promise<"deleted" | "blocked" | "notfound"> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const ex = await client.query(`SELECT 1 FROM ops.assets WHERE id = $1`, [id]);
+    if (!ex.rows[0]) { await client.query("ROLLBACK"); return "notfound"; }
+    const cash = await client.query(`SELECT 1 FROM ops.cash_entries WHERE ref_type = 'asset' AND ref_id = $1 LIMIT 1`, [id]);
+    if (cash.rows[0]) { await client.query("ROLLBACK"); return "blocked"; }
+    await client.query(`DELETE FROM ops.assets WHERE id = $1`, [id]);
+    await client.query("COMMIT");
+    return "deleted";
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // --- M5 HR (staff, attendance, payroll) --------------------------------------
 
 export interface StaffRow {

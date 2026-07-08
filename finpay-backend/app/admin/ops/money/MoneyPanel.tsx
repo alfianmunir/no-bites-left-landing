@@ -316,34 +316,125 @@ function Budgets({ budgets, monthLabel }: { budgets: BudgetRow[]; monthLabel: st
 }
 
 // ============================================================ Assets
-function AssetItem({ asset }: { asset: AssetRow }) {
+const CATEGORY_OPTIONS = [
+  { value: "production", label: "Production" },
+  { value: "storage", label: "Storage" },
+  { value: "other", label: "Other" },
+];
+const CATEGORY_LABEL: Record<string, string> = Object.fromEntries(CATEGORY_OPTIONS.map((c) => [c.value, c.label]));
+
+async function postAsset(body: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch("/api/admin/ops/asset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, error: data.error };
+}
+
+function AddAsset() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [cost, setCost] = useState(asset.purchaseCost != null ? String(Math.round(asset.purchaseCost)) : "");
-  const [purchasedAt, setPurchasedAt] = useState(new Date().toISOString().slice(0, 10));
-  const [account, setAccount] = useState("bank");
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState("production");
+  const [status, setStatus] = useState("planned");
+  const [cost, setCost] = useState("");
+  const [targetMonth, setTargetMonth] = useState("");
+  const [life, setLife] = useState("48");
+  const [salvage, setSalvage] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const markOwned = async () => {
-    setError(null); setBusy(true);
-    try {
-      const res = await fetch("/api/admin/ops/asset", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assetId: asset.id, purchaseCost: cost === "" ? null : Number(cost), purchasedAt, account }),
-      });
-      const data = await res.json();
-      if (!res.ok) setError(data.error ?? "Could not update the asset.");
-      else { setOpen(false); router.refresh(); }
-    } catch {
-      setError("Request failed — check your connection.");
-    } finally {
-      setBusy(false);
-    }
+  const submit = async () => {
+    setError(null);
+    if (!name.trim()) return setError("Enter a name.");
+    setBusy(true);
+    const { ok, error } = await postAsset({
+      action: "create", name, category, status,
+      purchaseCost: cost === "" ? null : Number(cost),
+      targetMonth: status === "planned" && targetMonth ? targetMonth + "-01" : null,
+      usefulLifeMonths: life === "" ? null : Number(life),
+      salvageValue: salvage === "" ? 0 : Number(salvage),
+    });
+    setBusy(false);
+    if (!ok) setError(error ?? "Could not add the asset.");
+    else { setName(""); setCost(""); setTargetMonth(""); setSalvage(""); setStatus("planned"); setOpen(false); router.refresh(); }
   };
 
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} style={{ alignSelf: "flex-start", padding: "8px 16px", borderRadius: 999, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>+ Add asset</button>
+    );
+  }
+  return (
+    <div style={{ ...card, display: "flex", flexDirection: "column", gap: 10, background: "var(--surface2)" }}>
+      <div style={{ fontWeight: 900, fontSize: 14, color: "var(--choco)" }}>New asset</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr 1fr", gap: 10 }}>
+        <div><label style={labelStyle}>Name</label><input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Display chiller" /></div>
+        <div><label style={labelStyle}>Category</label>
+          <select style={inputStyle} value={category} onChange={(e) => setCategory(e.target.value)}>{CATEGORY_OPTIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}</select>
+        </div>
+        <div><label style={labelStyle}>Status</label>
+          <select style={inputStyle} value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="planned">Planned</option>
+            <option value="owned">Owned (already have)</option>
+          </select>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+        <div><label style={labelStyle}>{status === "owned" ? "Cost (Rp)" : "Est. cost (Rp)"}</label><input type="number" inputMode="numeric" min="0" style={inputStyle} value={cost} onChange={(e) => setCost(e.target.value)} /></div>
+        {status === "planned" ? (
+          <div><label style={labelStyle}>Target month</label><input type="month" style={inputStyle} value={targetMonth} onChange={(e) => setTargetMonth(e.target.value)} /></div>
+        ) : <div />}
+        <div><label style={labelStyle}>Life (months)</label><input type="number" inputMode="numeric" min="1" style={inputStyle} value={life} onChange={(e) => setLife(e.target.value)} /></div>
+        <div><label style={labelStyle}>Salvage (Rp)</label><input type="number" inputMode="numeric" min="0" style={inputStyle} value={salvage} onChange={(e) => setSalvage(e.target.value)} placeholder="0" /></div>
+      </div>
+      {status === "owned" && <div style={{ fontSize: 11.5, color: "var(--soft)" }}>Registering an owned asset does <strong>not</strong> post a cash-out (assumed already paid). To buy a planned asset with a cash-out, add it as Planned then “Mark bought”.</div>}
+      {error && <div style={{ color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 10 }}>
+        <button onClick={submit} disabled={busy} style={{ padding: "10px 18px", borderRadius: 10, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 13.5, cursor: busy ? "default" : "pointer" }}>{busy ? "Saving…" : "Add asset"}</button>
+        <button onClick={() => { setOpen(false); setError(null); }} style={{ border: "none", background: "transparent", color: "var(--soft)", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function AssetItem({ asset }: { asset: AssetRow }) {
+  const router = useRouter();
+  const [mode, setMode] = useState<null | "buy" | "edit">(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // buy state
+  const [cost, setCost] = useState(asset.purchaseCost != null ? String(Math.round(asset.purchaseCost)) : "");
+  const [purchasedAt, setPurchasedAt] = useState(new Date().toISOString().slice(0, 10));
+  const [account, setAccount] = useState("bank");
+  // edit state
+  const [eName, setEName] = useState(asset.name);
+  const [eCategory, setECategory] = useState(asset.category);
+  const [eCost, setECost] = useState(asset.purchaseCost != null ? String(Math.round(asset.purchaseCost)) : "");
+  const [eTarget, setETarget] = useState(asset.targetMonth ? asset.targetMonth.slice(0, 7) : "");
+  const [eLife, setELife] = useState(asset.usefulLifeMonths != null ? String(asset.usefulLifeMonths) : "48");
+  const [eSalvage, setESalvage] = useState(asset.salvageValue ? String(Math.round(asset.salvageValue)) : "");
+
+  const run = async (body: Record<string, unknown>, onOk?: () => void) => {
+    setError(null); setBusy(true);
+    const { ok, error } = await postAsset(body);
+    setBusy(false);
+    if (!ok) setError(error ?? "Could not update the asset.");
+    else { onOk?.(); router.refresh(); }
+  };
+
+  const markOwned = () => run({ assetId: asset.id, purchaseCost: cost === "" ? null : Number(cost), purchasedAt, account }, () => setMode(null));
+  const saveEdit = () => run({
+    action: "update", assetId: asset.id, name: eName, category: eCategory,
+    purchaseCost: eCost === "" ? null : Number(eCost),
+    targetMonth: eTarget ? eTarget + "-01" : null,
+    usefulLifeMonths: eLife === "" ? null : Number(eLife),
+    salvageValue: eSalvage === "" ? 0 : Number(eSalvage),
+  }, () => setMode(null));
+  const dispose = () => { if (confirm(`Dispose ${asset.name}? It stops depreciating (kept for records).`)) run({ action: "dispose", assetId: asset.id }); };
+  const remove = () => { if (confirm(`Delete ${asset.name}? This can't be undone.`)) run({ action: "delete", assetId: asset.id }); };
+
   const statusColor = asset.status === "owned" ? "var(--green)" : asset.status === "planned" ? "var(--orange)" : "var(--soft)";
+  const btn = { padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--line)", background: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer" } as React.CSSProperties;
 
   return (
     <div style={card}>
@@ -351,42 +442,52 @@ function AssetItem({ asset }: { asset: AssetRow }) {
         <div>
           <div style={{ fontWeight: 800, fontSize: 14 }}>{asset.name} <span style={{ fontSize: 11.5, fontWeight: 800, color: statusColor, textTransform: "uppercase" }}>· {asset.status}</span></div>
           <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>
-            {asset.category}
+            {CATEGORY_LABEL[asset.category] ?? asset.category}
             {asset.purchaseCost != null && <> · {rupiah(asset.purchaseCost)}</>}
             {asset.status === "owned" && asset.monthlyDepreciation > 0 && <> · {rupiah(asset.monthlyDepreciation)}/mo depreciation</>}
             {asset.status === "planned" && asset.targetMonth && <> · target {asset.targetMonth.slice(0, 7)}</>}
           </div>
         </div>
-        {asset.status === "planned" && (
-          <button onClick={() => setOpen((o) => !o)} style={{ padding: "6px 14px", borderRadius: 999, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>
-            {open ? "Cancel" : "Mark bought"}
-          </button>
-        )}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {asset.status === "planned" && (
+            <button onClick={() => setMode(mode === "buy" ? null : "buy")} style={{ ...btn, border: "1.5px solid var(--choco)", color: "var(--choco)" }}>{mode === "buy" ? "Cancel" : "Mark bought"}</button>
+          )}
+          <button onClick={() => setMode(mode === "edit" ? null : "edit")} style={{ ...btn, color: "var(--choco)" }}>{mode === "edit" ? "Close" : "Edit"}</button>
+          {asset.status === "owned" && <button onClick={dispose} disabled={busy} style={{ ...btn, color: "var(--soft)" }}>Dispose</button>}
+          {asset.status !== "owned" && <button onClick={remove} disabled={busy} style={{ ...btn, color: "var(--red)" }}>Delete</button>}
+        </div>
       </div>
-      {open && (
+
+      {mode === "buy" && (
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-            <div>
-              <label style={labelStyle}>Actual cost (Rp)</label>
-              <input type="number" inputMode="numeric" min="0" style={inputStyle} value={cost} onChange={(e) => setCost(e.target.value)} />
-            </div>
-            <div>
-              <label style={labelStyle}>Bought on</label>
-              <input type="date" style={inputStyle} value={purchasedAt} onChange={(e) => setPurchasedAt(e.target.value)} />
-            </div>
-            <div>
-              <label style={labelStyle}>Pay from</label>
-              <select style={inputStyle} value={account} onChange={(e) => setAccount(e.target.value)}>
-                {ACCOUNT_OPTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
-              </select>
-            </div>
+            <div><label style={labelStyle}>Actual cost (Rp)</label><input type="number" inputMode="numeric" min="0" style={inputStyle} value={cost} onChange={(e) => setCost(e.target.value)} /></div>
+            <div><label style={labelStyle}>Bought on</label><input type="date" style={inputStyle} value={purchasedAt} onChange={(e) => setPurchasedAt(e.target.value)} /></div>
+            <div><label style={labelStyle}>Pay from</label><select style={inputStyle} value={account} onChange={(e) => setAccount(e.target.value)}>{ACCOUNT_OPTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}</select></div>
           </div>
           {error && <div style={{ color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
-          <button onClick={markOwned} disabled={busy} style={{ alignSelf: "flex-start", padding: "10px 18px", borderRadius: 10, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 13.5, cursor: busy ? "default" : "pointer" }}>
-            {busy ? "Saving…" : "Confirm purchase (posts capex cash-out)"}
-          </button>
+          <button onClick={markOwned} disabled={busy} style={{ alignSelf: "flex-start", padding: "10px 18px", borderRadius: 10, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 13.5, cursor: busy ? "default" : "pointer" }}>{busy ? "Saving…" : "Confirm purchase (posts capex cash-out)"}</button>
         </div>
       )}
+
+      {mode === "edit" && (
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 10 }}>
+            <div><label style={labelStyle}>Name</label><input style={inputStyle} value={eName} onChange={(e) => setEName(e.target.value)} /></div>
+            <div><label style={labelStyle}>Category</label><select style={inputStyle} value={eCategory} onChange={(e) => setECategory(e.target.value)}>{CATEGORY_OPTIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}</select></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
+            <div><label style={labelStyle}>Cost (Rp)</label><input type="number" inputMode="numeric" min="0" style={inputStyle} value={eCost} onChange={(e) => setECost(e.target.value)} /></div>
+            <div><label style={labelStyle}>Target month</label><input type="month" style={inputStyle} value={eTarget} onChange={(e) => setETarget(e.target.value)} /></div>
+            <div><label style={labelStyle}>Life (months)</label><input type="number" inputMode="numeric" min="1" style={inputStyle} value={eLife} onChange={(e) => setELife(e.target.value)} /></div>
+            <div><label style={labelStyle}>Salvage (Rp)</label><input type="number" inputMode="numeric" min="0" style={inputStyle} value={eSalvage} onChange={(e) => setESalvage(e.target.value)} placeholder="0" /></div>
+          </div>
+          {error && <div style={{ color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
+          <button onClick={saveEdit} disabled={busy} style={{ alignSelf: "flex-start", padding: "10px 18px", borderRadius: 10, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 13.5, cursor: busy ? "default" : "pointer" }}>{busy ? "Saving…" : "Save changes"}</button>
+        </div>
+      )}
+
+      {mode == null && error && <div style={{ marginTop: 8, color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
     </div>
   );
 }
@@ -402,9 +503,10 @@ function Assets({ assets }: { assets: AssetRow[] }) {
         <span>Monthly depreciation <strong style={{ color: "var(--ink)" }}>{rupiah(monthlyDep)}</strong></span>
         {plannedCost > 0 && <span>Planned capex <strong style={{ color: "var(--ink)" }}>{rupiah(plannedCost)}</strong></span>}
       </div>
+      <AddAsset />
       <div style={sectionLabel}>ASSET REGISTER · {assets.length}</div>
       {assets.length === 0 ? (
-        <div style={{ ...card, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No assets.</div>
+        <div style={{ ...card, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No assets yet — add one above.</div>
       ) : (
         assets.map((a) => <AssetItem key={a.id} asset={a} />)
       )}
