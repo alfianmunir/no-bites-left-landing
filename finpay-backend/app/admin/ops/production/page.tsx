@@ -1,6 +1,13 @@
 import { redirect } from "next/navigation";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, listRecipes, listOpenBatches, listBatchHistory } from "@/lib/opsStore";
+import {
+  opsEnabled,
+  listRecipes,
+  listOpenBatches,
+  listBatchHistory,
+  listOpenBatchCycles,
+  listBatchCycleHistory,
+} from "@/lib/opsStore";
 import { OpsShell, DbNotice } from "../OpsChrome";
 import ProductionPanel from "./ProductionPanel";
 
@@ -18,12 +25,25 @@ export default async function OpsProductionPage() {
     );
   }
 
-  const [recipes, openBatches, history] = await Promise.all([listRecipes(), listOpenBatches(), listBatchHistory()]);
-  const subtitle = openBatches.length > 0 ? `${openBatches.length} in progress · ${history.length} recent` : "Start a batch to consume the recipe and cost it";
+  const [recipes, openBatches, history, openCycles, cycleHistory] = await Promise.all([
+    listRecipes(),
+    listOpenBatches(),
+    listBatchHistory(),
+    listOpenBatchCycles(),
+    listBatchCycleHistory(),
+  ]);
+  const openCount = openBatches.length + openCycles.length;
+  const subtitle = openCount > 0 ? `${openCount} in progress · ${cycleHistory.length + history.length} recent` : "Build a batch — add recipes, check stock, then bake & cost it";
 
   return (
     <OpsShell active="/admin/ops/production" title="Production" subtitle={subtitle}>
-      <ProductionPanel recipes={recipes} openBatches={openBatches} history={history} />
+      <ProductionPanel
+        recipes={recipes}
+        openBatches={openBatches}
+        history={history}
+        openCycles={openCycles}
+        cycleHistory={cycleHistory}
+      />
     </OpsShell>
   );
 }

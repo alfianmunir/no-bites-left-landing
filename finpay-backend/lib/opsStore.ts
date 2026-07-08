@@ -126,6 +126,45 @@ export interface BatchHistoryRow {
   laborCost: number;
 }
 
+// --- M2b Production cycles (multi-recipe batches) ---------------------------
+
+/** One recipe in a batch draft, as the client sends it to start_batch_cycle. */
+export interface BatchLineInput {
+  recipeId: string;
+  plannedQty: number;
+  qtySample: number;
+  qtyKol: number;
+  qtyRnd: number;
+}
+
+/** A line inside an open/closed cycle (with its cost breakdown once closed). */
+export interface BatchLineRow {
+  id: string;
+  recipeId: string;
+  sku: string;
+  name: string;
+  plannedQty: number;
+  qtySample: number;
+  qtyKol: number;
+  qtyRnd: number;
+  actualYield: number | null;
+  costPerUnit: number | null;
+}
+
+export interface OpenBatchCycleRow {
+  id: string;
+  createdAt: string;
+  laborCost: number;
+  lines: BatchLineRow[];
+}
+
+export interface BatchCycleHistoryRow {
+  id: string;
+  bakedAt: string;
+  laborCost: number;
+  lines: BatchLineRow[];
+}
+
 export interface ChannelRow {
   id: string;
   name: string;
@@ -521,7 +560,7 @@ export async function listOpenBatches(): Promise<OpenBatchRow[]> {
        FROM ops.production_batches pb
        JOIN ops.recipes r ON r.id = pb.recipe_id
        JOIN ops.products pr ON pr.id = r.product_id
-      WHERE pb.status = 'in_progress'
+      WHERE pb.status = 'in_progress' AND pb.is_cycle = false
       ORDER BY pb.created_at ASC`,
   );
   return rows.map((r) => ({
@@ -543,7 +582,7 @@ export async function listBatchHistory(limit = 40): Promise<BatchHistoryRow[]> {
        JOIN ops.recipes r ON r.id = pb.recipe_id
        JOIN ops.products pr ON pr.id = r.product_id
        LEFT JOIN ops.batch_costs bc ON bc.batch_id = pb.id
-      WHERE pb.status = 'closed'
+      WHERE pb.status = 'closed' AND pb.is_cycle = false
       ORDER BY pb.baked_at DESC NULLS LAST, bc.computed_at DESC NULLS LAST
       LIMIT $1`,
     [limit],
@@ -583,6 +622,112 @@ export async function closeBatch(
   const p = await pool();
   const { rows } = await p.query(`SELECT ops.close_batch($1, $2, $3, $4) AS cpu`, [batchId, actualYield, laborMinutes, laborCost]);
   return num(rows[0].cpu);
+}
+
+// --- M2b Production cycles ---------------------------------------------------
+
+/** Start a production cycle — creates the header + lines and consumes every
+ *  line's scaled BOM (FEFO) in one transaction. Returns the new batch id. */
+export async function startBatchCycle(
+  lines: BatchLineInput[],
+  laborCost: number,
+  laborMinutes: number | null,
+): Promise<string> {
+  const p = await pool();
+  const payload = lines.map((l) => ({
+    recipe_id: l.recipeId,
+    planned_qty: l.plannedQty,
+    qty_sample: l.qtySample,
+    qty_kol: l.qtyKol,
+    qty_rnd: l.qtyRnd,
+  }));
+  const { rows } = await p.query(`SELECT ops.start_batch_cycle($1::jsonb, $2, $3) AS batch`, [
+    JSON.stringify(payload),
+    laborCost,
+    laborMinutes,
+  ]);
+  return rows[0].batch as string;
+}
+
+/** Close a cycle — applies per-line actual yields, costs each line, posts the
+ *  for-sale finished goods and rolls std_cost. Returns the batch's total cost. */
+export async function closeBatchCycle(
+  batchId: string,
+  yields: { lineId: string; actualYield: number }[],
+): Promise<number> {
+  const p = await pool();
+  const payload = yields.map((y) => ({ line_id: y.lineId, actual_yield: y.actualYield }));
+  const { rows } = await p.query(`SELECT ops.close_batch_cycle($1, $2::jsonb) AS total`, [batchId, JSON.stringify(payload)]);
+  return num(rows[0].total);
+}
+
+async function loadCycleLines(batchIds: string[]): Promise<Map<string, BatchLineRow[]>> {
+  const map = new Map<string, BatchLineRow[]>();
+  if (batchIds.length === 0) return map;
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT bl.id, bl.batch_id, bl.recipe_id, pr.sku, pr.name, bl.planned_qty,
+            bl.qty_sample, bl.qty_kol, bl.qty_rnd, bl.actual_yield, bl.cost_per_unit
+       FROM ops.batch_lines bl
+       JOIN ops.products pr ON pr.id = bl.product_id
+      WHERE bl.batch_id = ANY($1::uuid[])
+      ORDER BY bl.created_at ASC`,
+    [batchIds],
+  );
+  for (const r of rows) {
+    const line: BatchLineRow = {
+      id: r.id as string,
+      recipeId: r.recipe_id as string,
+      sku: r.sku as string,
+      name: r.name as string,
+      plannedQty: num(r.planned_qty),
+      qtySample: num(r.qty_sample),
+      qtyKol: num(r.qty_kol),
+      qtyRnd: num(r.qty_rnd),
+      actualYield: r.actual_yield == null ? null : num(r.actual_yield),
+      costPerUnit: r.cost_per_unit == null ? null : num(r.cost_per_unit),
+    };
+    const list = map.get(r.batch_id as string);
+    if (list) list.push(line);
+    else map.set(r.batch_id as string, [line]);
+  }
+  return map;
+}
+
+export async function listOpenBatchCycles(): Promise<OpenBatchCycleRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pb.id, pb.created_at, COALESCE(pb.labor_cost, 0) AS labor_cost
+       FROM ops.production_batches pb
+      WHERE pb.status = 'in_progress' AND pb.is_cycle = true
+      ORDER BY pb.created_at ASC`,
+  );
+  const lines = await loadCycleLines(rows.map((r) => r.id as string));
+  return rows.map((r) => ({
+    id: r.id as string,
+    createdAt: new Date(r.created_at as string).toISOString(),
+    laborCost: num(r.labor_cost),
+    lines: lines.get(r.id as string) ?? [],
+  }));
+}
+
+export async function listBatchCycleHistory(limit = 20): Promise<BatchCycleHistoryRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pb.id, pb.baked_at, COALESCE(pb.labor_cost, 0) AS labor_cost
+       FROM ops.production_batches pb
+      WHERE pb.status = 'closed' AND pb.is_cycle = true
+      ORDER BY pb.baked_at DESC NULLS LAST, pb.created_at DESC
+      LIMIT $1`,
+    [limit],
+  );
+  const lines = await loadCycleLines(rows.map((r) => r.id as string));
+  return rows.map((r) => ({
+    id: r.id as string,
+    bakedAt: (r.baked_at as string) ?? "",
+    laborCost: num(r.labor_cost),
+    lines: lines.get(r.id as string) ?? [],
+  }));
 }
 
 // --- M3 OMS (channel unification) --------------------------------------------
@@ -1745,7 +1890,12 @@ export async function deleteOrDeactivateRecipe(recipeId: string): Promise<"delet
   const client = await p.connect();
   try {
     await client.query("BEGIN");
-    const used = await client.query(`SELECT 1 FROM ops.production_batches WHERE recipe_id = $1 LIMIT 1`, [recipeId]);
+    // Used by a legacy single-recipe batch OR any cycle line (batch_lines).
+    const used = await client.query(
+      `SELECT 1 FROM ops.production_batches WHERE recipe_id = $1
+        UNION ALL SELECT 1 FROM ops.batch_lines WHERE recipe_id = $1 LIMIT 1`,
+      [recipeId],
+    );
     let outcome: "deleted" | "deactivated" | "notfound";
     if ((used.rowCount ?? 0) === 0) {
       await client.query(`DELETE FROM ops.recipe_lines WHERE recipe_id = $1`, [recipeId]);
@@ -1772,13 +1922,19 @@ export async function cancelBatch(batchId: string): Promise<boolean> {
   const client = await p.connect();
   try {
     await client.query("BEGIN");
-    const b = await client.query(`SELECT status FROM ops.production_batches WHERE id = $1`, [batchId]);
+    const b = await client.query(`SELECT status, is_cycle FROM ops.production_batches WHERE id = $1`, [batchId]);
     if (!b.rows[0]) {
       await client.query("ROLLBACK");
       return false;
     }
     if (b.rows[0].status !== "in_progress") throw new Error("only in-progress batches can be cancelled");
-    // Reverse each consume with an opposite move (append-only correction).
+    // Cycle batches tag their consumes to batch_lines — reverse via the RPC.
+    if (b.rows[0].is_cycle) {
+      const c = await client.query(`SELECT ops.cancel_batch_cycle($1) AS ok`, [batchId]);
+      await client.query("COMMIT");
+      return c.rows[0]?.ok === true;
+    }
+    // Legacy single-recipe batch: reverse each consume with an opposite move.
     await client.query(
       `INSERT INTO ops.stock_moves (item_id, qty, reason, ref_type, ref_id, unit_cost, note)
        SELECT item_id, -qty, 'opname_adj', 'batch_cancel', $1, unit_cost, 'Batch cancelled — consumption reversed'

@@ -306,3 +306,23 @@ a { cursor: pointer; }
   .nbl-landing [data-rh2] { font-size: 31px !important; }
   .nbl-landing [data-r="quiz-opts"] { grid-template-columns: 1fr !important; }
 }
+
+/* ---------------------------------------------------------------- Ops shell
+   Mobile-first single column (720px) that opens up on iPad / desktop. The nav
+   chip rows stay horizontal (scroll on phone, fit on wide screens); the content
+   area widens and gains breathing room so tables and forms don't look cramped. */
+.ops-shell { max-width: 720px; margin: 0 auto; min-height: 100dvh; background: var(--surface2); }
+.ops-body { padding: 14px 20px 48px; }
+/* Nav rows share the body's horizontal inset (vertical padding stays inline) so
+   chips line up with the content edge at every width. */
+.ops-navrow { padding-left: 20px; padding-right: 20px; }
+@media (min-width: 768px) {
+  .ops-shell { max-width: 900px; }
+  .ops-body { padding: 20px 28px 64px; }
+  .ops-navrow { padding-left: 28px; padding-right: 28px; }
+}
+@media (min-width: 1180px) {
+  .ops-shell { max-width: 1080px; }
+  .ops-body { padding: 24px 36px 72px; }
+  .ops-navrow { padding-left: 36px; padding-right: 36px; }
+}
