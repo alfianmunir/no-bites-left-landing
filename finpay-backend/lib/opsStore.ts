@@ -895,11 +895,30 @@ export async function createSalesOrder(input: {
 
     let gross = 0;
     for (const l of input.lines) {
-      // Snapshot unit_cogs from the product's live std_cost at sale time.
+      // Inventory-driven COGS: value the sale at the product's current
+      // finished-goods moving-average cost — the cost it was actually MADE at
+      // (production_output posts at that batch's made-cost; sales draw down at
+      // the running average). Falls back to std_cost when there's no
+      // finished-goods on hand yet (e.g. product never produced through a batch).
+      const macQ = await client.query(
+        `SELECT CASE WHEN COALESCE(sum(qty), 0) > 0
+                     THEN sum(qty * unit_cost) / sum(qty)
+                     ELSE (SELECT std_cost FROM ops.products WHERE id = $1) END AS mac
+           FROM ops.stock_moves WHERE product_id = $1`,
+        [l.productId],
+      );
+      const madeCost = num(macQ.rows[0]?.mac);
+      // Snapshot realized COGS on the line…
       await client.query(
         `INSERT INTO ops.sales_lines (sales_order_id, product_id, qty, unit_price, unit_cogs)
-         SELECT $1, $2, $3, $4, pr.std_cost FROM ops.products pr WHERE pr.id = $2`,
-        [salesOrderId, l.productId, l.qty, l.unitPrice],
+         VALUES ($1, $2, $3, $4, $5)`,
+        [salesOrderId, l.productId, l.qty, l.unitPrice, madeCost],
+      );
+      // …and draw finished goods down at that cost, so COGS ties to the ledger.
+      await client.query(
+        `INSERT INTO ops.stock_moves (product_id, qty, reason, ref_type, ref_id, unit_cost)
+         VALUES ($1, $2, 'sale', 'sales_order', $3, $4)`,
+        [l.productId, -l.qty, salesOrderId, madeCost],
       );
       gross += l.unitPrice * l.qty;
     }
