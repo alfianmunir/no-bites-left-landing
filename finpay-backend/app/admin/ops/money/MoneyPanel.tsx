@@ -49,8 +49,13 @@ function Overview({ position, pnl, monthLabel }: { position: CashPosition; pnl: 
     { k: "Revenue (net of fees)", v: pnl.revenue },
     { k: "− COGS", v: -pnl.cogs, neg: true },
     { k: "Gross profit", v: pnl.grossProfit, strong: true },
+    { k: "− Labor (non-prod)", v: -pnl.labor, neg: true },
     { k: "− Opex", v: -pnl.opex, neg: true },
     { k: "− Marketing", v: -pnl.marketing, neg: true },
+    { k: "− Samples / KOL", v: -pnl.samples, neg: true },
+    { k: "− R&D", v: -pnl.rnd, neg: true },
+    { k: "− Waste", v: -pnl.waste, neg: true },
+    { k: "− Shrinkage", v: -pnl.shrinkage, neg: true },
     { k: "− Depreciation", v: -pnl.depreciation, neg: true },
     { k: "Operating profit", v: pnl.operatingProfit, strong: true },
   ];

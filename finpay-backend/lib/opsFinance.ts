@@ -33,10 +33,15 @@ export function monthRange(d = new Date()): { start: string; end: string; label:
 
 export interface PnL {
   revenue: number; // net of channel fees
-  cogs: number;
+  cogs: number; // inventory-driven, made-cost of goods sold
   grossProfit: number;
+  labor: number; // non-production payroll (production labor sits in COGS — decision B)
   opex: number;
-  marketing: number;
+  marketing: number; // marketing spend (expenses)
+  samples: number; // sample + KOL units given away, at made-cost
+  rnd: number; // R&D units, at made-cost
+  waste: number; // spoilage / failed bakes written off
+  shrinkage: number; // net opname loss (surplus reduces it; can be negative = net found)
   depreciation: number;
   operatingProfit: number;
 }
@@ -44,12 +49,18 @@ export interface PnL {
 export function assemblePnL(parts: {
   revenue: number;
   cogs: number;
+  labor: number;
   opex: number;
   marketing: number;
+  samples: number;
+  rnd: number;
+  waste: number;
+  shrinkage: number;
   depreciation: number;
 }): PnL {
   const grossProfit = parts.revenue - parts.cogs;
-  const operatingProfit = grossProfit - parts.opex - parts.marketing - parts.depreciation;
+  const operatingProfit =
+    grossProfit - parts.labor - parts.opex - parts.marketing - parts.samples - parts.rnd - parts.waste - parts.shrinkage - parts.depreciation;
   return { ...parts, grossProfit, operatingProfit };
 }
 

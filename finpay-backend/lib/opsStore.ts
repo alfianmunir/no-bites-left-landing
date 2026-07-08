@@ -1464,7 +1464,44 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
       GROUP BY ec.type`,
     [startISO, endISO],
   );
-  const [sales, exp] = await Promise.all([salesQ, expQ]);
+  // Waste (spoilage) + shrinkage (net opname loss). Both left inventory without
+  // a sale, so they're period costs. cost = −qty × unit_cost (loss/waste qty is
+  // negative → positive cost; opname surplus qty is positive → negative =
+  // "found" income). Opname respects the same from-deployment cutoff as its log.
+  const leakQ = p.query(
+    `SELECT
+       COALESCE(sum(CASE WHEN reason = 'waste' THEN -qty * unit_cost ELSE 0 END), 0) AS waste,
+       COALESCE(sum(CASE WHEN reason = 'opname_adj' THEN -qty * unit_cost ELSE 0 END), 0) AS shrinkage
+     FROM ops.stock_moves
+     WHERE created_at >= $1::date AND created_at < ($2::date + 1)
+       AND (reason = 'waste'
+            OR (reason = 'opname_adj' AND ref_type = 'opname'
+                AND created_at >= COALESCE((SELECT (value #>> '{}')::timestamptz FROM ops.config WHERE key = 'opname_since'), '-infinity'::timestamptz)))`,
+    [startISO, endISO],
+  );
+  // Sample/KOL + R&D units given away, valued at their made-cost — the cost that
+  // never became sellable (decision: reclassed here rather than lost in inventory).
+  const carveQ = p.query(
+    `SELECT COALESCE(sum((bl.qty_sample + bl.qty_kol) * bl.cost_per_unit), 0) AS samples,
+            COALESCE(sum(bl.qty_rnd * bl.cost_per_unit), 0) AS rnd
+       FROM ops.batch_lines bl
+       JOIN ops.production_batches pb ON pb.id = bl.batch_id
+      WHERE pb.status = 'closed' AND bl.cost_per_unit IS NOT NULL
+        AND pb.baked_at BETWEEN $1::date AND $2::date`,
+    [startISO, endISO],
+  );
+  // Labor = NON-production payroll only (decision B: baker/packer labor is
+  // absorbed into COGS via batch labor; officers/admin are a period expense).
+  const laborQ = p.query(
+    `SELECT COALESCE(sum(pl.net), 0) AS labor
+       FROM ops.payroll_lines pl
+       JOIN ops.payroll_runs pr ON pr.id = pl.run_id
+       JOIN ops.staff s ON s.id = pl.staff_id
+      WHERE pr.period = to_char($1::date, 'YYYY-MM')
+        AND s.role NOT IN ('baker', 'packer')`,
+    [startISO],
+  );
+  const [sales, exp, leak, carve, lab] = await Promise.all([salesQ, expQ, leakQ, carveQ, laborQ]);
   const s = sales.rows[0];
   const revenue = num(s.gross) - num(s.fee);
   const cogs = num(s.cogs);
@@ -1474,10 +1511,15 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
     if (r.type === "opex") opex = num(r.amount);
     else if (r.type === "marketing") marketing = num(r.amount);
   }
+  const waste = num(leak.rows[0].waste);
+  const shrinkage = num(leak.rows[0].shrinkage);
+  const samples = num(carve.rows[0].samples);
+  const rnd = num(carve.rows[0].rnd);
+  const labor = num(lab.rows[0].labor);
   // Depreciation of owned assets (straight-line monthly) is a P&L cost.
   const assets = await listAssets();
   const depreciation = assets.reduce((sum, a) => sum + a.monthlyDepreciation, 0);
-  return assemblePnL({ revenue, cogs, opex, marketing, depreciation });
+  return assemblePnL({ revenue, cogs, labor, opex, marketing, samples, rnd, waste, shrinkage, depreciation });
 }
 
 // --- M4 writes (append cash movements alongside the source row) --------------
