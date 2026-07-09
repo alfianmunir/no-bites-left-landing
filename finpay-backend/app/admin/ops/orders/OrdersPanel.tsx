@@ -243,11 +243,18 @@ function OrderCard({ order, checked, onToggle }: { order: SalesOrderRow; checked
             <span style={{ color: "var(--soft)", fontWeight: 700, fontSize: 12.5 }}> · {order.channel}</span>
           </span>
         </label>
-        <div style={{ fontSize: 12, color: "var(--soft)" }}>{order.orderedAt.slice(0, 10)}</div>
+        <div style={{ fontSize: 12, color: "var(--soft)", textAlign: "right" }}>
+          {order.orderedAt.slice(0, 10)}
+          {order.pickupDate && <div style={{ fontWeight: 800, color: "var(--choco)" }}>🛍 pickup {order.pickupDate}</div>}
+        </div>
       </div>
 
       {order.items.length > 0 && (
         <div style={{ fontSize: 13, color: "var(--ink)" }}>{itemsSummary(order.items)}</div>
+      )}
+
+      {order.sourceOrderId && (
+        <div style={{ fontSize: 11.5, color: "var(--soft)" }}>website order · {order.sourceOrderId}</div>
       )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 14px", fontSize: 12.5, color: "var(--soft)" }}>

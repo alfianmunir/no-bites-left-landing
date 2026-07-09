@@ -205,6 +205,8 @@ export interface SalesOrderRow {
   items: SalesOrderItem[];
   invoiceStatus: string | null;
   invoiceDueDate: string | null;
+  pickupDate: string | null; // website orders: storefront pickup date
+  sourceOrderId: string | null; // website order id (public.orders) if from the storefront
 }
 
 /** A product's total quantity across all orders still in "preparing" — the
@@ -1116,17 +1118,19 @@ export async function listSalesOrders(limit = 50): Promise<SalesOrderRow[]> {
   const p = await pool();
   const { rows } = await p.query(
     `SELECT so.id, c.name AS channel, so.customer_ref, so.status,
-            so.fulfillment_status, so.payment_status, so.ordered_at,
+            so.fulfillment_status, so.payment_status, so.ordered_at, so.source_order_id,
             c.fee_pct, c.fee_flat,
             COALESCE(sum(sl.unit_price * sl.qty), 0) AS gross,
             COALESCE(sum(sl.unit_cogs * sl.qty), 0) AS cogs,
             COALESCE(sum(sl.qty), 0) AS units,
-            inv.status AS invoice_status, inv.due_date AS invoice_due
+            inv.status AS invoice_status, inv.due_date AS invoice_due,
+            po.pickup_date
        FROM ops.sales_orders so
        JOIN ops.channels c ON c.id = so.channel_id
        LEFT JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
        LEFT JOIN ops.invoices inv ON inv.sales_order_id = so.id
-      GROUP BY so.id, c.name, so.customer_ref, so.status, so.fulfillment_status, so.payment_status, so.ordered_at, c.fee_pct, c.fee_flat, inv.status, inv.due_date
+       LEFT JOIN public.orders po ON po.id = so.source_order_id
+      GROUP BY so.id, c.name, so.customer_ref, so.status, so.fulfillment_status, so.payment_status, so.ordered_at, so.source_order_id, c.fee_pct, c.fee_flat, inv.status, inv.due_date, po.pickup_date
       ORDER BY so.ordered_at DESC
       LIMIT $1`,
     [limit],
@@ -1149,6 +1153,8 @@ export async function listSalesOrders(limit = 50): Promise<SalesOrderRow[]> {
     items: items.get(r.id as string) ?? [],
     invoiceStatus: (r.invoice_status as string) ?? null,
     invoiceDueDate: (r.invoice_due as string) ?? null,
+    pickupDate: r.pickup_date ? new Date(r.pickup_date as string).toISOString().slice(0, 10) : null,
+    sourceOrderId: (r.source_order_id as string) ?? null,
   }));
 }
 
