@@ -436,6 +436,59 @@ export async function updateProductWasteRate(productId: string, wasteRate: numbe
   return rows[0] ? mapPricingProduct(rows[0]) : null;
 }
 
+// --- Website → ops menu mapping (Phase 8) ------------------------------------
+
+export interface MenuMapRow {
+  menuSku: string;
+  menuName: string;
+  menuVariant: string | null;
+  available: boolean;
+  productId: string | null; // null = not yet mapped
+  productName: string | null;
+  productSku: string | null;
+  qtyPer: number;
+}
+
+/** Every storefront menu item with its ops-product mapping (if set). Left join
+ *  so unmapped items still show for the admin to link. */
+export async function listMenuMap(): Promise<MenuMapRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT mi.sku, mi.name, mi.variant, mi.available,
+            m.product_id, m.qty_per, pr.name AS product_name, pr.sku AS product_sku
+       FROM public.menu_items mi
+       LEFT JOIN ops.menu_product_map m ON m.menu_sku = mi.sku
+       LEFT JOIN ops.products pr ON pr.id = m.product_id
+      ORDER BY mi.sort_order, mi.sku`,
+  );
+  return rows.map((r) => ({
+    menuSku: r.sku as string,
+    menuName: r.name as string,
+    menuVariant: (r.variant as string) ?? null,
+    available: Boolean(r.available),
+    productId: (r.product_id as string) ?? null,
+    productName: (r.product_name as string) ?? null,
+    productSku: (r.product_sku as string) ?? null,
+    qtyPer: r.qty_per == null ? 1 : num(r.qty_per),
+  }));
+}
+
+/** Link a storefront SKU to an ops product (+ qty multiplier), or clear it
+ *  (productId null → remove the mapping). */
+export async function setMenuMap(menuSku: string, productId: string | null, qtyPer: number): Promise<void> {
+  const p = await pool();
+  if (!productId) {
+    await p.query(`DELETE FROM ops.menu_product_map WHERE menu_sku = $1`, [menuSku]);
+    return;
+  }
+  await p.query(
+    `INSERT INTO ops.menu_product_map (menu_sku, product_id, qty_per, updated_at)
+     VALUES ($1, $2, $3, now())
+     ON CONFLICT (menu_sku) DO UPDATE SET product_id = EXCLUDED.product_id, qty_per = EXCLUDED.qty_per, updated_at = now()`,
+    [menuSku, productId, qtyPer],
+  );
+}
+
 /** Set the general (default) waste rate in ops.config. */
 export async function setGeneralWasteRate(wasteRate: number): Promise<void> {
   const p = await pool();
