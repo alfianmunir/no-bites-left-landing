@@ -53,6 +53,7 @@ const GROUPS: Group[] = [
     label: "Order",
     icon: "🧾",
     tabs: [
+      { href: "/admin/ops/board", label: "Board" },
       { href: "/admin/ops/orders", label: "Orders" },
       { href: "/admin/ops/menu-map", label: "Menu links" },
     ],
