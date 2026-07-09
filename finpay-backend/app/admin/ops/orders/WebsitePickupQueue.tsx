@@ -1,11 +1,16 @@
+"use client";
+
 /**
- * Website pickup queue — the storefront orders that need fulfilling, read live
- * from public.orders (source of truth). Grouped by pickup date; each card opens
- * the unified ops order detail where the real lifecycle actions live (advance →
- * customer email, cancel/refund → Finpay). Purely presentational server render.
+ * Website pickup queue — the storefront orders that need fulfilling, read from
+ * ops.sales_orders (via getStore) on the server and passed in here. Grouped by
+ * pickup date; clicking a card opens the order-detail MODAL (no separate page)
+ * where the lifecycle actions live: advance (preparing → packed → ready for
+ * pickup → picked up, forward-only + timestamped) → customer email, and
+ * cancel/refund → Finpay.
  */
-import Link from "next/link";
+import { useState } from "react";
 import type { Order } from "@/lib/orders";
+import AdminOrderDetail from "@/app/_components/AdminOrderDetail";
 
 function rupiah(n: number): string {
   return "Rp " + n.toLocaleString("id-ID");
@@ -18,9 +23,10 @@ function groupLabel(dateStr: string | null, today: string, tomorrow: string): st
   return dateStr > tomorrow ? "UPCOMING" : "PAST DUE";
 }
 
+// Single-axis status → website pickup label (PAID=preparing, BAKING=packed).
 const STATUS_LABEL: Record<string, string> = {
-  PAID: "Paid — start baking",
-  BAKING: "Baking",
+  PAID: "Preparing",
+  BAKING: "Packed",
   READY_FOR_PICKUP: "Ready for pickup",
 };
 
@@ -37,6 +43,8 @@ export default function WebsitePickupQueue({
   today: string;
   tomorrow: string;
 }) {
+  const [selected, setSelected] = useState<Order | null>(null);
+
   const groups = new Map<string, Order[]>();
   for (const o of [...active].sort((a, b) => (a.pickup_date ?? "").localeCompare(b.pickup_date ?? ""))) {
     const label = groupLabel(o.pickup_date, today, tomorrow);
@@ -64,18 +72,22 @@ export default function WebsitePickupQueue({
             {groups.get(g)!.map((o) => {
               const isNew = o.status === "PAID"; // needs ack until an admin advances it
               return (
-                <Link
+                <button
                   key={o.id}
-                  href={`/admin/ops/orders/${o.id}`}
+                  type="button"
+                  onClick={() => setSelected(o)}
                   style={{
                     padding: 12,
                     borderRadius: 14,
                     background: "#fff",
                     border: isNew ? "2px solid var(--orange)" : "1.5px solid var(--line)",
                     position: "relative",
-                    textDecoration: "none",
+                    textAlign: "left",
+                    cursor: "pointer",
                     color: "inherit",
                     display: "block",
+                    width: "100%",
+                    font: "inherit",
                   }}
                 >
                   {isNew && (
@@ -96,7 +108,7 @@ export default function WebsitePickupQueue({
                   <div style={{ marginTop: 6, fontSize: 11, fontWeight: 800, color: "var(--choco)" }}>
                     {STATUS_LABEL[o.status] ?? o.status}
                   </div>
-                </Link>
+                </button>
               );
             })}
           </div>
@@ -120,6 +132,10 @@ export default function WebsitePickupQueue({
             ))}
           </div>
         </div>
+      )}
+
+      {selected && (
+        <AdminOrderDetail order={selected} variant="modal" onClose={() => setSelected(null)} />
       )}
     </div>
   );

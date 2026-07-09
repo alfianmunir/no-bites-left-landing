@@ -11,6 +11,7 @@ export const dynamic = "force-dynamic";
 const STAGES = [
   { key: "preparing", label: "Preparing", color: "var(--orange)" },
   { key: "packed", label: "Packed", color: "var(--blue)" },
+  { key: "ready_for_pickup", label: "Ready for pickup", color: "var(--choco)" },
   { key: "in_delivery", label: "In delivery", color: "var(--choco)" },
   { key: "delivered", label: "Delivered", color: "var(--green)" },
 ] as const;
@@ -68,7 +69,9 @@ export default async function OpsBoardPage() {
   const today = new Date().toISOString().slice(0, 10);
   const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
 
-  const active = orders.filter((o) => o.fulfillmentStatus !== "delivered" && o.status !== "cancelled");
+  const active = orders.filter(
+    (o) => o.fulfillmentStatus !== "delivered" && o.fulfillmentStatus !== "picked_up" && o.status !== "cancelled",
+  );
   const byStage = (k: string) => active.filter((o) => o.fulfillmentStatus === k);
 
   // Pickups (website orders with a date, not yet delivered), soonest first.
