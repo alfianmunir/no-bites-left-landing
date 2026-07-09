@@ -13,6 +13,7 @@ import {
   listPricingProducts,
   getPricingConfig,
   getStaffMonthAttendance,
+  listWebsiteOrderDrift,
 } from "@/lib/opsStore";
 import { monthRange } from "@/lib/opsFinance";
 import { computeSkuPricing } from "@/lib/opsPricing";
@@ -58,7 +59,7 @@ export default async function OpsTodayPage() {
       </OpsShell>
     );
   }
-  const [cash, pnl, reorder, expiring, batches, invoices, waste, products, cfg] = await Promise.all([
+  const [cash, pnl, reorder, expiring, batches, invoices, waste, products, cfg, drift] = await Promise.all([
     getCashPosition(),
     getPnL(month.start, month.end),
     listReorderAlerts(),
@@ -68,6 +69,7 @@ export default async function OpsTodayPage() {
     listWaste30d(),
     listPricingProducts(),
     getPricingConfig(),
+    listWebsiteOrderDrift(),
   ]);
 
   // §6 margin guardrails
@@ -81,6 +83,8 @@ export default async function OpsTodayPage() {
   const arTotal = outstanding.reduce((s, i) => s + i.amount, 0);
 
   const alerts: Array<{ text: string; tone: string; href: string }> = [];
+  // Website→finance drift: paid orders whose revenue hasn't reached the ledger.
+  for (const d of drift) alerts.push({ text: `Website order ${d.customerName} paid but not in finance — ${rupiah(d.amount)}`, tone: "var(--red)", href: "/admin/ops/orders" });
   for (const s of belowFloor) alerts.push({ text: `${s.name} margin ${(s.margin * 100).toFixed(1)}% — below floor`, tone: "var(--red)", href: "/admin/ops/pricing" });
   for (const a of reorder) alerts.push({ text: `Reorder ${a.name} — ${a.qtyOnHand} ${a.unit} left`, tone: "var(--red)", href: "/admin/ops/stock" });
   for (const e of expiring) alerts.push({ text: `${e.item} expiring — ${e.daysLeft < 0 ? "expired" : e.daysLeft + "d left"}`, tone: "var(--orange)", href: "/admin/ops/stock" });
