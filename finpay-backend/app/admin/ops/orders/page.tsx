@@ -1,13 +1,14 @@
 /**
- * /admin/ops/orders — unified Order command center.
+ * /admin/ops/orders — unified Order command center. Section order:
  *
- * Top: the WEBSITE PICKUP QUEUE, read from ops.sales_orders (the native store for
- * storefront orders). Cards open the order-detail modal, where advancing fires
- * the customer email and cancel/refund run through Finpay.
+ *   1. TO PREPARE      — per-product totals across preparing orders
+ *   2. NEW ORDER       — manual entry for WA / direct / marketplace / B2B / canteen
+ *   3. WEBSITE ORDERS  — the storefront queue (ops.sales_orders native), cards open
+ *                        the detail modal; bulk bar sets status forward-only
+ *   4. OTHER ORDERS    — non-website channels grouped by date (+ B2B invoices)
  *
- * Below: the CHANNEL ORDER manager (WA / direct / marketplace / B2B / canteen),
- * also ops.sales_orders. reconcileWebsiteFinance() sweeps any paid website order
- * whose ledger effect the webhook didn't post (backstop only).
+ * reconcileWebsiteFinance() sweeps any paid website order whose ledger effect
+ * the webhook didn't post (backstop only).
  */
 import { redirect } from "next/navigation";
 import Link from "next/link";
@@ -26,11 +27,13 @@ import {
 } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 import { OpsShell, DbNotice } from "../OpsChrome";
-import OrdersPanel from "./OrdersPanel";
+import OrdersPanel, { OrderEntry, PrepList } from "./OrdersPanel";
 import WebsitePickupQueue from "./WebsitePickupQueue";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const sectionTitle: React.CSSProperties = { fontWeight: 900, fontSize: 15, color: "var(--choco)", marginBottom: 12 };
 
 export default async function OpsOrdersPage() {
   if (!(await isAdminSession())) redirect("/admin/login");
@@ -39,8 +42,7 @@ export default async function OpsOrdersPage() {
   const today = now.toISOString().slice(0, 10);
   const tomorrow = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
 
-  // Website pickup queue — always available (reads public.orders, works even
-  // without the ops DB).
+  // Website orders queue (native ops.sales_orders via the OrderStore).
   const store = getStore();
   await store.init();
   const [paid, baking, ready, expired] = await Promise.all([
@@ -51,10 +53,10 @@ export default async function OpsOrdersPage() {
   ]);
   const active: Order[] = [...paid, ...baking, ...ready];
 
-  const queueSection = (
-    <section style={{ marginBottom: 26 }}>
+  const websiteSection = (
+    <section>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 12, flexWrap: "wrap" }}>
-        <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>🛍 Website pickups</div>
+        <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>🛍 Website orders</div>
         <div style={{ display: "flex", gap: 16 }}>
           <Link href="/admin/ops/bake-sheet" style={{ fontSize: 12.5, fontWeight: 800, color: "var(--choco)", textDecoration: "none" }}>Bake sheet →</Link>
           <Link href="/admin/wholesale" style={{ fontSize: 12.5, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>Wholesale →</Link>
@@ -64,11 +66,11 @@ export default async function OpsOrdersPage() {
     </section>
   );
 
-  // Channel orders + finance mirror need the ops DB.
+  // Prep list, order entry, and the channel manager need the ops DB.
   if (!opsEnabled) {
     return (
-      <OpsShell active="/admin/ops/orders" title="Orders" subtitle={`${active.length} website pickup(s)`}>
-        {queueSection}
+      <OpsShell active="/admin/ops/orders" title="Orders" subtitle={`${active.length} website order(s)`}>
+        {websiteSection}
         <DbNotice />
       </OpsShell>
     );
@@ -90,29 +92,44 @@ export default async function OpsOrdersPage() {
     listPreparingItems(),
     listUnmappedWebsiteSkus(),
   ]);
-  // The command center shows website orders in the queue above; here we show only
-  // the other channels so website orders aren't listed twice.
+  // Website orders live in the queue section; the manual channels here. Website
+  // is also excluded from the entry form — storefront orders are born native.
   const channelOrders = salesOrders.filter((o) => o.channel !== "website");
-  const subtitle = `${active.length} website pickup(s) · ${channelOrders.length} channel order(s)`;
+  const entryChannels = channels.filter((c) => c.name !== "website");
+  const subtitle = `${active.length} website order(s) · ${channelOrders.length} channel order(s)`;
 
   return (
     <OpsShell active="/admin/ops/orders" title="Orders" subtitle={subtitle}>
-      {unmappedSkus.length > 0 && (
-        <div style={{ marginBottom: 18, padding: "12px 14px", background: "#fff3e2", border: "1.5px solid var(--orange)", borderRadius: 12, fontSize: 12.5, color: "var(--choco)" }}>
-          <div style={{ fontWeight: 900, marginBottom: 2 }}>{unmappedSkus.length} menu item(s) not linked to an ops product</div>
-          Their orders still show and sell fine, but cost &amp; stock won&apos;t post until you link{" "}
-          <span style={{ fontWeight: 800 }}>{unmappedSkus.join(", ")}</span>{" "}
-          on the <Link href="/admin/ops/menu-map" style={{ fontWeight: 800, color: "var(--choco)" }}>Menu links</Link> screen.
+      <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
+        {/* 1. To prepare */}
+        <section>
+          <PrepList prep={prep} />
+        </section>
+
+        {/* 2. New order */}
+        <section>
+          <OrderEntry channels={entryChannels} products={products} />
+        </section>
+
+        {/* 3. Website orders (+ bulk status) */}
+        <div>
+          {unmappedSkus.length > 0 && (
+            <div style={{ marginBottom: 14, padding: "12px 14px", background: "#fff3e2", border: "1.5px solid var(--orange)", borderRadius: 12, fontSize: 12.5, color: "var(--choco)" }}>
+              <div style={{ fontWeight: 900, marginBottom: 2 }}>{unmappedSkus.length} menu item(s) not linked to an ops product</div>
+              Their orders still show and sell fine, but cost &amp; stock won&apos;t post until you link{" "}
+              <span style={{ fontWeight: 800 }}>{unmappedSkus.join(", ")}</span>{" "}
+              on the <Link href="/admin/ops/menu-map" style={{ fontWeight: 800, color: "var(--choco)" }}>Menu links</Link> screen.
+            </div>
+          )}
+          {websiteSection}
         </div>
-      )}
 
-      {queueSection}
-
-      <section>
-        <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)", marginBottom: 4 }}>Channel orders</div>
-        <div style={{ fontSize: 12, color: "var(--soft)", marginBottom: 12 }}>WA / direct / marketplace / B2B / canteen — recorded manually.</div>
-        <OrdersPanel channels={channels} products={products} orders={channelOrders} invoices={invoices} prep={prep} today={today} />
-      </section>
+        {/* 4. Other orders by date (+ B2B invoices) */}
+        <section>
+          <div style={sectionTitle}>Other orders</div>
+          <OrdersPanel orders={channelOrders} invoices={invoices} today={today} />
+        </section>
+      </div>
     </OpsShell>
   );
 }

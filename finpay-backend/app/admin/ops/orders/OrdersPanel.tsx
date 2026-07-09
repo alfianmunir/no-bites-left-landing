@@ -48,7 +48,7 @@ function itemsSummary(items: { name: string; qty: number }[]): string {
 }
 
 // ---------------------------------------------------------------- Quick entry
-function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: PricingProductRow[] }) {
+export function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: PricingProductRow[] }) {
   const router = useRouter();
   const [channelId, setChannelId] = useState(channels[0]?.id ?? "");
   const [customerRef, setCustomerRef] = useState("");
@@ -182,7 +182,7 @@ function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: 
 }
 
 // ---------------------------------------------------------------- Prep list
-function PrepList({ prep }: { prep: PrepItemRow[] }) {
+export function PrepList({ prep }: { prep: PrepItemRow[] }) {
   const totalUnits = prep.reduce((s, p) => s + p.qty, 0);
   return (
     <div style={{ ...card, borderColor: "var(--orange)", background: "var(--tint-amber)" }}>
@@ -337,19 +337,17 @@ function InvoiceItem({ inv, today }: { inv: InvoiceRow; today: string }) {
 }
 
 // ---------------------------------------------------------------- Panel
+// "Other orders by date" — every non-website channel's orders grouped by order
+// date, with the bulk stage/payment bar + B2B invoices. The New-order form
+// (OrderEntry) and To-prepare list (PrepList) are exported above and composed
+// by the page in its own section order.
 export default function OrdersPanel({
-  channels,
-  products,
   orders,
   invoices,
-  prep,
   today,
 }: {
-  channels: ChannelRow[];
-  products: PricingProductRow[];
   orders: SalesOrderRow[];
   invoices: InvoiceRow[];
-  prep: PrepItemRow[];
   today: string;
 }) {
   const router = useRouter();
@@ -414,23 +412,8 @@ export default function OrdersPanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18, paddingBottom: selected.size > 0 ? 84 : 0 }}>
-      <OrderEntry channels={channels} products={products} />
-
-      <PrepList prep={prep} />
-
-      {invoices.length > 0 && (
-        <div>
-          <div style={sectionLabel}>B2B INVOICES (AR) · {outstanding.length} open · {rupiah(outstandingTotal)}</div>
-          <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-            {invoices.map((inv) => (
-              <InvoiceItem key={inv.id} inv={inv} today={today} />
-            ))}
-          </div>
-        </div>
-      )}
-
       <div>
-        <div style={sectionLabel}>RECENT ORDERS · {orders.length}</div>
+        <div style={sectionLabel}>OTHER ORDERS · {orders.length} · BY DATE</div>
         {orders.length === 0 ? (
           <div style={{ ...card, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No orders recorded yet.</div>
         ) : (
@@ -459,6 +442,17 @@ export default function OrdersPanel({
           </div>
         )}
       </div>
+
+      {invoices.length > 0 && (
+        <div>
+          <div style={sectionLabel}>B2B INVOICES (AR) · {outstanding.length} open · {rupiah(outstandingTotal)}</div>
+          <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+            {invoices.map((inv) => (
+              <InvoiceItem key={inv.id} inv={inv} today={today} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Sticky bulk action bar */}
       {selected.size > 0 && (
