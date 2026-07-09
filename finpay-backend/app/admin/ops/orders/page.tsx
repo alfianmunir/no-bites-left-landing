@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, listChannels, listPricingProducts, listSalesOrders, listInvoices, listPreparingItems } from "@/lib/opsStore";
+import { opsEnabled, listChannels, listPricingProducts, listSalesOrders, listInvoices, listPreparingItems, syncWebsiteOrders } from "@/lib/opsStore";
+import { logOrder } from "@/lib/log";
 import { OpsShell, DbNotice } from "../OpsChrome";
 import OrdersPanel from "./OrdersPanel";
 
@@ -16,6 +17,14 @@ export default async function OpsOrdersPage() {
         <DbNotice />
       </OpsShell>
     );
+  }
+
+  // Pull any paid website orders into ops before listing (idempotent). Guarded
+  // so a sync hiccup never blanks the Orders page.
+  try {
+    await syncWebsiteOrders();
+  } catch (e) {
+    logOrder("ops_website_sync_failed", { error: String(e) });
   }
 
   const [channels, products, orders, invoices, prep] = await Promise.all([

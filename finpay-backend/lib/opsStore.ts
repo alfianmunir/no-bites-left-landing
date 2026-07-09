@@ -1015,6 +1015,103 @@ export async function createSalesOrder(input: {
   }
 }
 
+/**
+ * Reconcile paid website orders into ops (Phase B). Reads public.orders (the
+ * single source of truth for both Finpay + GoBiz — see WEBSITE-ORDERS-CONTRACT.md),
+ * and for every paid-or-beyond order not yet linked, creates a `website` ops
+ * sales order via the menu_product_map: draws down finished goods, books COGS at
+ * made-cost, and posts the cash-in (= orders.amount). Idempotent (keyed on
+ * sales_orders.source_order_id = orders.id) — safe to run on every page load.
+ * Touches only ops-side tables; never edits the payment branch.
+ */
+export async function syncWebsiteOrders(): Promise<{ created: number; flagged: number }> {
+  const p = await pool();
+  const ch = await p.query(`SELECT id FROM ops.channels WHERE name = 'website' AND active`);
+  if (!ch.rows[0]) return { created: 0, flagged: 0 };
+  const channelId = ch.rows[0].id as string;
+
+  // Paid-or-beyond website orders with no ops sales order yet.
+  const { rows: orders } = await p.query(
+    `SELECT o.id, o.items, o.amount, o.status, o.customer, o.created_at
+       FROM public.orders o
+      WHERE o.status IN ('PAID', 'BAKING', 'READY_FOR_PICKUP', 'PICKED_UP')
+        AND NOT EXISTS (SELECT 1 FROM ops.sales_orders so WHERE so.source_order_id = o.id)
+      ORDER BY o.created_at ASC`,
+  );
+
+  let created = 0;
+  let flagged = 0; // orders with ≥1 unmapped SKU (built from the mapped lines only)
+
+  for (const o of orders) {
+    const items: Array<{ sku?: string; qty?: number | string; unit_price?: number | string }> = Array.isArray(o.items) ? o.items : [];
+    const lines: Array<{ productId: string; qty: number; unitPrice: number }> = [];
+    let anyUnmapped = false;
+    for (const it of items) {
+      const sku = typeof it.sku === "string" ? it.sku : "";
+      const qty = Number(it.qty) || 0;
+      const unitPrice = Number(it.unit_price) || 0;
+      if (!sku || qty <= 0) continue;
+      const m = await p.query(`SELECT product_id, qty_per FROM ops.menu_product_map WHERE menu_sku = $1`, [sku]);
+      if (!m.rows[0]) { anyUnmapped = true; continue; } // unmapped SKU — flag, don't silently drop
+      const qtyPer = num(m.rows[0].qty_per) || 1;
+      // ops line: qty in product-units; unit_price scaled so revenue = website line total.
+      lines.push({ productId: m.rows[0].product_id as string, qty: qty * qtyPer, unitPrice: qtyPer > 0 ? unitPrice / qtyPer : unitPrice });
+    }
+    if (lines.length === 0) { flagged++; continue; } // nothing mappable yet — leave for a later run
+    if (anyUnmapped) flagged++;
+
+    const fulfillment = o.status === "PICKED_UP" ? "delivered" : o.status === "READY_FOR_PICKUP" ? "packed" : "preparing";
+    const customerRef = (o.customer && typeof o.customer === "object" && (o.customer as Record<string, unknown>).firstName)
+      ? String((o.customer as Record<string, unknown>).firstName)
+      : "Website";
+    const amount = num(o.amount);
+
+    const client = await p.connect();
+    try {
+      await client.query("BEGIN");
+      const so = await client.query(
+        `INSERT INTO ops.sales_orders (channel_id, customer_ref, source_order_id, ordered_at, fulfillment_status, payment_status, fulfilled_at)
+         VALUES ($1, $2, $3, COALESCE($4::timestamptz, now()), $5, 'paid', CASE WHEN $5 = 'delivered' THEN now() ELSE NULL END) RETURNING id`,
+        [channelId, customerRef, o.id, o.created_at, fulfillment],
+      );
+      const soId = so.rows[0].id as string;
+      for (const l of lines) {
+        const macQ = await client.query(
+          `SELECT CASE WHEN COALESCE(sum(qty), 0) > 0 THEN sum(qty * unit_cost) / sum(qty)
+                       ELSE (SELECT std_cost FROM ops.products WHERE id = $1) END AS mac
+             FROM ops.stock_moves WHERE product_id = $1`,
+          [l.productId],
+        );
+        const madeCost = num(macQ.rows[0]?.mac);
+        await client.query(
+          `INSERT INTO ops.sales_lines (sales_order_id, product_id, qty, unit_price, unit_cogs) VALUES ($1, $2, $3, $4, $5)`,
+          [soId, l.productId, l.qty, l.unitPrice, madeCost],
+        );
+        await client.query(
+          `INSERT INTO ops.stock_moves (product_id, qty, reason, ref_type, ref_id, unit_cost) VALUES ($1, $2, 'sale', 'sales_order', $3, $4)`,
+          [l.productId, -l.qty, soId, madeCost],
+        );
+      }
+      // Cash-in = the authoritative website total (orders.amount).
+      if (amount > 0) {
+        await client.query(
+          `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+           VALUES ('in', $1, 'bank', 'sales_website', 'sales_order', $2, COALESCE($3::date, CURRENT_DATE), $4)`,
+          [amount, soId, o.created_at, o.id],
+        );
+      }
+      await client.query("COMMIT");
+      created++;
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+  return { created, flagged };
+}
+
 export async function listSalesOrders(limit = 50): Promise<SalesOrderRow[]> {
   const p = await pool();
   const { rows } = await p.query(
