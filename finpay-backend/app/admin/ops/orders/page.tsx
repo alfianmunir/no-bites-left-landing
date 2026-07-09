@@ -1,14 +1,13 @@
 /**
  * /admin/ops/orders — unified Order command center.
  *
- * Top: the WEBSITE PICKUP QUEUE, read live from public.orders (source of truth),
- * so every paid storefront order is always visible here regardless of menu
- * mapping. Cards open the ops order detail, where advancing fires the customer
- * email and cancel/refund run through Finpay (ops drives the real order).
+ * Top: the WEBSITE PICKUP QUEUE, read from ops.sales_orders (the native store for
+ * storefront orders). Cards open the order-detail modal, where advancing fires
+ * the customer email and cancel/refund run through Finpay.
  *
- * Below: the CHANNEL ORDER manager (WA / direct / marketplace / B2B / canteen)
- * backed by ops.sales_orders. syncWebsiteOrders() still runs to mirror website
- * revenue into the finance ledger, but the queue above no longer depends on it.
+ * Below: the CHANNEL ORDER manager (WA / direct / marketplace / B2B / canteen),
+ * also ops.sales_orders. reconcileWebsiteFinance() sweeps any paid website order
+ * whose ledger effect the webhook didn't post (backstop only).
  */
 import { redirect } from "next/navigation";
 import Link from "next/link";
@@ -23,7 +22,7 @@ import {
   listInvoices,
   listPreparingItems,
   listUnmappedWebsiteSkus,
-  syncWebsiteOrders,
+  reconcileWebsiteFinance,
 } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 import { OpsShell, DbNotice } from "../OpsChrome";
@@ -75,12 +74,12 @@ export default async function OpsOrdersPage() {
     );
   }
 
-  // Mirror paid website orders into the finance ledger (idempotent, resilient).
-  // Guarded so a sync hiccup never blanks the page.
+  // Backstop: realize finance for any paid website order the webhook missed
+  // (idempotent). Guarded so a hiccup never blanks the page.
   try {
-    await syncWebsiteOrders();
+    await reconcileWebsiteFinance();
   } catch (e) {
-    logOrder("ops_website_sync_failed", { error: String(e) });
+    logOrder("ops_website_reconcile_failed", { error: String(e) });
   }
 
   const [channels, products, salesOrders, invoices, prep, unmappedSkus] = await Promise.all([
@@ -91,9 +90,9 @@ export default async function OpsOrdersPage() {
     listPreparingItems(),
     listUnmappedWebsiteSkus(),
   ]);
-  // The command center shows website orders live (above); here we show only the
-  // ops-native channel orders so website mirrors aren't listed twice.
-  const channelOrders = salesOrders.filter((o) => !o.sourceOrderId);
+  // The command center shows website orders in the queue above; here we show only
+  // the other channels so website orders aren't listed twice.
+  const channelOrders = salesOrders.filter((o) => o.channel !== "website");
   const subtitle = `${active.length} website pickup(s) · ${channelOrders.length} channel order(s)`;
 
   return (

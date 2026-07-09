@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, listSalesOrders, syncWebsiteOrders, type SalesOrderRow } from "@/lib/opsStore";
+import { opsEnabled, listSalesOrders, reconcileWebsiteFinance, type SalesOrderRow } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 import { OpsShell, DbNotice, rupiah, qty } from "../OpsChrome";
 
@@ -62,8 +62,8 @@ export default async function OpsBoardPage() {
     );
   }
 
-  // Pull paid website orders in first (idempotent; guarded).
-  try { await syncWebsiteOrders(); } catch (e) { logOrder("ops_board_sync_failed", { error: String(e) }); }
+  // Backstop: realize finance for any paid website order the webhook missed.
+  try { await reconcileWebsiteFinance(); } catch (e) { logOrder("ops_board_reconcile_failed", { error: String(e) }); }
 
   const orders = await listSalesOrders(200);
   const today = new Date().toISOString().slice(0, 10);
