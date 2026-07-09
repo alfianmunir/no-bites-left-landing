@@ -1,19 +1,13 @@
-import { redirect, notFound } from "next/navigation";
-import { isAdminSession } from "@/lib/adminAuth";
-import { getStore } from "@/lib/db";
-import AdminOrderDetail from "./AdminOrderDetail";
+/**
+ * Legacy order-detail route — order management now lives in the ops menu.
+ * Redirect to the unified ops order detail (/admin/ops/orders/[id]).
+ */
+import { redirect } from "next/navigation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export default async function AdminOrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  if (!(await isAdminSession())) redirect("/admin/login");
-
+export default async function LegacyAdminOrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const store = getStore();
-  await store.init();
-  const order = await store.get(id);
-  if (!order) notFound();
-
-  return <AdminOrderDetail order={order} />;
+  redirect(`/admin/ops/orders/${id}`);
 }

@@ -26,7 +26,7 @@ function waLink(phone: string): string {
   return `https://wa.me/${digits}`;
 }
 
-export default function AdminOrderDetail({ order }: { order: Order }) {
+export default function AdminOrderDetail({ order, backHref = "/admin" }: { order: Order; backHref?: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [confirmingRefund, setConfirmingRefund] = useState(false);
@@ -58,7 +58,7 @@ export default function AdminOrderDetail({ order }: { order: Order }) {
   return (
     <main style={{ maxWidth: 480, margin: "0 auto", minHeight: "100dvh", background: "var(--surface2)", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 20px", borderBottom: "1.5px solid var(--line)", background: "#fff" }}>
-        <Link href="/admin" className="icon-btn">‹</Link>
+        <Link href={backHref} className="icon-btn">‹</Link>
         <div style={{ fontWeight: 900, fontSize: 16, color: "var(--choco)" }}>#{order.id}</div>
       </div>
 
