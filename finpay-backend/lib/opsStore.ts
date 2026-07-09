@@ -491,6 +491,25 @@ export async function setMenuMap(menuSku: string, productId: string | null, qtyP
   );
 }
 
+/**
+ * SKUs that appear on paid-or-beyond website orders but have no menu_product_map
+ * row yet — i.e. the orders whose COGS/stock the finance sync can't book until an
+ * admin links them (see syncWebsiteOrders). Powers the "needs mapping" banner on
+ * the Orders command center. Empty = every live website SKU is mapped.
+ */
+export async function listUnmappedWebsiteSkus(): Promise<string[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT DISTINCT elem->>'sku' AS sku
+       FROM public.orders o, jsonb_array_elements(o.items) elem
+      WHERE o.status IN ('PAID', 'BAKING', 'READY_FOR_PICKUP', 'PICKED_UP')
+        AND COALESCE(elem->>'sku', '') <> ''
+        AND NOT EXISTS (SELECT 1 FROM ops.menu_product_map m WHERE m.menu_sku = elem->>'sku')
+      ORDER BY 1`,
+  );
+  return rows.map((r) => r.sku as string);
+}
+
 /** Set the general (default) waste rate in ops.config. */
 export async function setGeneralWasteRate(wasteRate: number): Promise<void> {
   const p = await pool();
@@ -1018,12 +1037,17 @@ export async function createSalesOrder(input: {
 }
 
 /**
- * Reconcile paid website orders into ops (Phase B). Reads public.orders (the
- * single source of truth for both Finpay + GoBiz — see WEBSITE-ORDERS-CONTRACT.md),
+ * Reconcile paid website orders into the ops finance ledger (Phase B). Reads
+ * public.orders (the single source of truth — see WEBSITE-ORDERS-CONTRACT.md),
  * and for every paid-or-beyond order not yet linked, creates a `website` ops
- * sales order via the menu_product_map: draws down finished goods, books COGS at
- * made-cost, and posts the cash-in (= orders.amount). Idempotent (keyed on
+ * sales order: draws mapped SKUs down finished goods at made-cost COGS and posts
+ * the cash-in (= orders.amount). RESILIENT: an order is always mirrored + its
+ * revenue always posted even if some/all of its SKUs are unmapped — those lines
+ * are skipped (no COGS/stock) and the order is counted in `flagged` so the admin
+ * can link them on the Menu-links screen. Idempotent (keyed on
  * sales_orders.source_order_id = orders.id) — safe to run on every page load.
+ * NOTE: this is the finance mirror only; the Orders command center shows website
+ * orders live from public.orders, so visibility never depends on this sync.
  * Touches only ops-side tables; never edits the payment branch.
  */
 export async function syncWebsiteOrders(): Promise<{ created: number; flagged: number }> {
@@ -1059,8 +1083,11 @@ export async function syncWebsiteOrders(): Promise<{ created: number; flagged: n
       // ops line: qty in product-units; unit_price scaled so revenue = website line total.
       lines.push({ productId: m.rows[0].product_id as string, qty: qty * qtyPer, unitPrice: qtyPer > 0 ? unitPrice / qtyPer : unitPrice });
     }
-    if (lines.length === 0) { flagged++; continue; } // nothing mappable yet — leave for a later run
-    if (anyUnmapped) flagged++;
+    // Resilient (was: skip when nothing mapped): ALWAYS create the mirror + post
+    // the cash-in so a paid website order's revenue is never silently dropped —
+    // unmapped SKUs just miss their COGS/stock line until an admin links them on
+    // the Menu-links screen. `flagged` counts orders needing that attention.
+    if (anyUnmapped || lines.length === 0) flagged++;
 
     const fulfillment = o.status === "PICKED_UP" ? "delivered" : o.status === "READY_FOR_PICKUP" ? "packed" : "preparing";
     const customerRef = (o.customer && typeof o.customer === "object" && (o.customer as Record<string, unknown>).firstName)
