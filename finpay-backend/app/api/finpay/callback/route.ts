@@ -21,7 +21,7 @@ import { mapFinpayStatus } from "@/lib/finpayStatus";
 import { notifyOpsPaid } from "@/lib/notify";
 import { isFinal, canTransition } from "@/lib/orders";
 import { logOrder } from "@/lib/log";
-import { mirrorWebsiteOrderById, opsEnabled } from "@/lib/opsStore";
+import { realizeWebsiteOrderPayment, opsEnabled } from "@/lib/opsStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -140,16 +140,16 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   if (mapped === "PAID" && updated) {
     await notifyOpsPaid(updated);
-    // Real-time finance mirror: book the paid order into ops the instant it's
-    // paid, instead of waiting for someone to open an ops page. Idempotent at the
-    // DB level (ON CONFLICT on source_order_id) and backstopped by the reconcile
-    // sweep, so a failure here is non-fatal — log and still ack, never block the
-    // webhook (rule §4: always respond once the signature is verified).
+    // Realize the finance side of the now-paid native order: sales_lines + COGS,
+    // finished-goods draw-down, and net cash-in. setStatus above already flipped
+    // payment_status=paid; this adds the ledger effect (idempotent). Non-fatal —
+    // log and still ack, never block the webhook (rule §4: always respond once
+    // the signature is verified).
     if (opsEnabled) {
       try {
-        await mirrorWebsiteOrderById(orderId);
+        await realizeWebsiteOrderPayment(orderId);
       } catch (e) {
-        logOrder("ops_mirror_failed", { orderId, error: String(e) });
+        logOrder("ops_realize_failed", { orderId, error: String(e) });
       }
     }
   }

@@ -202,8 +202,55 @@ class FileStore implements OrderStore {
 }
 
 // ---------------------------------------------------------------------------
-// Postgres store
+// Postgres store — backed by ops.sales_orders (Phase 10).
+//
+// The consumer + payment domain speaks a single-axis Order.status
+// (PENDING→PAID→BAKING→READY_FOR_PICKUP→PICKED_UP…). ops.sales_orders records
+// the same lifecycle across three columns (payment_status / status /
+// fulfillment_status) plus per-transition timestamps. These two helpers map
+// between the two so every getStore() caller keeps working unchanged while the
+// underlying table is now sales_orders. public.orders is retired.
 // ---------------------------------------------------------------------------
+
+/** Derive the single-axis Order.status from the ops.sales_orders 3-axis columns. */
+function deriveOrderStatus(r: Record<string, unknown>): OrderStatus {
+  const st = r.status as string;
+  const pay = r.payment_status as string;
+  const ff = r.fulfillment_status as string;
+  if (st === "cancelled") return "CANCELLED";
+  if (st === "expired") return "EXPIRED";
+  if (st === "refunded") return "REFUNDED";
+  if (pay !== "paid") return "PENDING";
+  switch (ff) {
+    case "picked_up": return "PICKED_UP";
+    case "ready_for_pickup": return "READY_FOR_PICKUP";
+    case "packed": return "BAKING";
+    case "delivered": return "DELIVERED";
+    case "in_delivery": return "OUT_FOR_DELIVERY";
+    default: return "PAID"; // preparing
+  }
+}
+
+/** The ops columns a single-axis status drives, + which timestamp it stamps. */
+function columnsForStatus(status: OrderStatus): {
+  payment_status?: string;
+  status?: string;
+  fulfillment_status?: string;
+  stamp?: "paid_at" | "packed_at" | "ready_at" | "fulfilled_at";
+} {
+  switch (status) {
+    case "PENDING": return { payment_status: "unpaid", status: "pending" };
+    case "PAID": return { payment_status: "paid", status: "confirmed", fulfillment_status: "preparing", stamp: "paid_at" };
+    case "BAKING": return { payment_status: "paid", status: "confirmed", fulfillment_status: "packed", stamp: "packed_at" };
+    case "READY_FOR_PICKUP": return { payment_status: "paid", status: "confirmed", fulfillment_status: "ready_for_pickup", stamp: "ready_at" };
+    case "PICKED_UP": return { payment_status: "paid", status: "fulfilled", fulfillment_status: "picked_up", stamp: "fulfilled_at" };
+    case "OUT_FOR_DELIVERY": return { payment_status: "paid", status: "confirmed", fulfillment_status: "in_delivery" };
+    case "DELIVERED": return { payment_status: "paid", status: "fulfilled", fulfillment_status: "delivered", stamp: "fulfilled_at" };
+    case "EXPIRED": return { status: "expired" };
+    case "CANCELLED": return { status: "cancelled" };
+    case "REFUNDED": return { status: "refunded" };
+  }
+}
 
 class PostgresStore implements OrderStore {
   // Lazy import so `pg` is only loaded when actually used.
@@ -232,13 +279,27 @@ class PostgresStore implements OrderStore {
     return this.poolPromise;
   }
 
+  // The website channel id (ops.sales_orders.channel_id), looked up once.
+  private channelIdPromise: Promise<string> | null = null;
+  private async websiteChannelId(): Promise<string> {
+    if (!this.channelIdPromise) {
+      this.channelIdPromise = (async () => {
+        const pool = await this.pool();
+        const { rows } = await pool.query(`SELECT id FROM ops.channels WHERE name = 'website' LIMIT 1`);
+        if (!rows[0]) throw new Error("ops.channels has no 'website' channel");
+        return rows[0].id as string;
+      })();
+    }
+    return this.channelIdPromise;
+  }
+
   private rowToOrder(r: Record<string, unknown>): Order {
     return {
-      id: r.id as string,
-      items: r.items as OrderItem[],
+      id: r.order_no as string,
+      items: (r.items as OrderItem[]) ?? [],
       amount: Number(r.amount),
       customer: r.customer as Customer,
-      status: r.status as OrderStatus,
+      status: deriveOrderStatus(r),
       fulfillment: ((r.fulfillment as Fulfillment) ?? "PICKUP"),
       pickup_date: (r.pickup_date as string) ?? null,
       finpay_reference: (r.finpay_reference as string) ?? null,
@@ -246,16 +307,21 @@ class PostgresStore implements OrderStore {
       expiry_link: r.expiry_link ? new Date(r.expiry_link as string).toISOString() : null,
       callback_log: (r.callback_log as unknown[]) ?? [],
       status_history: (r.status_history as StatusEvent[]) ?? [],
-      delivery_address: (r.delivery_address as Order["delivery_address"]) ?? null,
-      delivery_date: (r.delivery_date as string) ?? null,
-      courier: (r.courier as Order["courier"]) ?? null,
+      // Delivery is dormant (v1 pickup only) and not stored on sales_orders.
+      delivery_address: null,
+      delivery_date: null,
+      courier: null,
       user_id: (r.user_id as string) ?? null,
-      created_at: new Date(r.created_at as string).toISOString(),
+      created_at: new Date(r.ordered_at as string).toISOString(),
       updated_at: new Date(r.updated_at as string).toISOString(),
     };
   }
 
   async init(): Promise<void> {
+    // ops.sales_orders + the rest of the ops schema are managed by db/ops-*.sql
+    // migrations, not by this app. schema.sql still owns the other public tables
+    // (addresses, feedback, wholesale_requests, menu_items, + the archived
+    // orders table), so keep applying it — it's idempotent (IF NOT EXISTS).
     const pool = await this.pool();
     const schema = await fs.readFile(path.join(process.cwd(), "db", "schema.sql"), "utf8");
     await pool.query(schema);
@@ -263,25 +329,28 @@ class PostgresStore implements OrderStore {
 
   async create(input: NewOrderInput): Promise<Order> {
     const pool = await this.pool();
+    const channelId = await this.websiteChannelId();
+    const c = columnsForStatus(input.status);
     const { rows } = await pool.query(
-      `INSERT INTO orders
-         (id, items, amount, customer, status, fulfillment, pickup_date, status_history,
-          delivery_address, delivery_date, courier, user_id)
-       VALUES ($1, $2::jsonb, $3, $4::jsonb, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12)
+      `INSERT INTO ops.sales_orders
+         (channel_id, order_no, customer, customer_ref, user_id, items, amount, pickup_date,
+          fulfillment, payment_status, status, fulfillment_status, status_history)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)
        RETURNING *`,
       [
+        channelId,
         input.id,
+        JSON.stringify(input.customer),
+        input.customer?.firstName ?? "Website",
+        input.userId,
         JSON.stringify(input.items),
         input.amount,
-        JSON.stringify(input.customer),
-        input.status,
-        input.fulfillment,
         input.pickupDate ?? null,
+        input.fulfillment,
+        c.payment_status ?? "unpaid",
+        c.status ?? "pending",
+        c.fulfillment_status ?? "preparing",
         JSON.stringify([statusEvent(input.status, "system")]),
-        input.deliveryAddress ? JSON.stringify(input.deliveryAddress) : null,
-        input.deliveryDate ?? null,
-        input.courier ? JSON.stringify(input.courier) : null,
-        input.userId,
       ],
     );
     return this.rowToOrder(rows[0]);
@@ -289,22 +358,29 @@ class PostgresStore implements OrderStore {
 
   async setStatus(id: string, status: OrderStatus, by: StatusActor): Promise<Order | null> {
     const pool = await this.pool();
-    // Append the event and set status in one statement so the audit trail can
-    // never drift from the status column.
+    const c = columnsForStatus(status);
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    let i = 1;
+    if (c.payment_status) { sets.push(`payment_status = $${i++}`); vals.push(c.payment_status); }
+    if (c.status) { sets.push(`status = $${i++}`); vals.push(c.status); }
+    if (c.fulfillment_status) { sets.push(`fulfillment_status = $${i++}`); vals.push(c.fulfillment_status); }
+    // Stamp the transition time once (don't clobber an earlier stamp on replay).
+    if (c.stamp) sets.push(`${c.stamp} = COALESCE(${c.stamp}, now())`);
+    sets.push(`status_history = COALESCE(status_history, '[]'::jsonb) || $${i++}::jsonb`);
+    vals.push(JSON.stringify([statusEvent(status, by)]));
+    sets.push(`updated_at = now()`);
+    vals.push(id); // WHERE order_no
     const { rows } = await pool.query(
-      `UPDATE orders
-         SET status = $2,
-             status_history = COALESCE(status_history, '[]'::jsonb) || $3::jsonb,
-             updated_at = now()
-       WHERE id = $1 RETURNING *`,
-      [id, status, JSON.stringify([statusEvent(status, by)])],
+      `UPDATE ops.sales_orders SET ${sets.join(", ")} WHERE order_no = $${i} RETURNING *`,
+      vals,
     );
     return rows[0] ? this.rowToOrder(rows[0]) : null;
   }
 
   async get(id: string): Promise<Order | null> {
     const pool = await this.pool();
-    const { rows } = await pool.query(`SELECT * FROM orders WHERE id = $1`, [id]);
+    const { rows } = await pool.query(`SELECT * FROM ops.sales_orders WHERE order_no = $1`, [id]);
     return rows[0] ? this.rowToOrder(rows[0]) : null;
   }
 
@@ -314,14 +390,14 @@ class PostgresStore implements OrderStore {
     const vals: unknown[] = [];
     let i = 1;
     for (const [k, v] of Object.entries(patch)) {
-      sets.push(`${k} = $${i++}`);
+      sets.push(`${k} = $${i++}`); // keys are fixed OrderUpdate fields (finpay_reference/redirect_url/expiry_link)
       vals.push(v);
     }
     if (sets.length === 0) return this.get(id);
     sets.push(`updated_at = now()`);
     vals.push(id);
     const { rows } = await pool.query(
-      `UPDATE orders SET ${sets.join(", ")} WHERE id = $${i} RETURNING *`,
+      `UPDATE ops.sales_orders SET ${sets.join(", ")} WHERE order_no = $${i} RETURNING *`,
       vals,
     );
     return rows[0] ? this.rowToOrder(rows[0]) : null;
@@ -330,9 +406,9 @@ class PostgresStore implements OrderStore {
   async appendCallback(id: string, entry: unknown): Promise<Order | null> {
     const pool = await this.pool();
     const { rows } = await pool.query(
-      `UPDATE orders
-         SET callback_log = callback_log || $2::jsonb, updated_at = now()
-       WHERE id = $1 RETURNING *`,
+      `UPDATE ops.sales_orders
+         SET callback_log = COALESCE(callback_log, '[]'::jsonb) || $2::jsonb, updated_at = now()
+       WHERE order_no = $1 RETURNING *`,
       [id, JSON.stringify([entry])],
     );
     return rows[0] ? this.rowToOrder(rows[0]) : null;
@@ -340,25 +416,30 @@ class PostgresStore implements OrderStore {
 
   async list(filter?: { status?: OrderStatus; userId?: string }): Promise<Order[]> {
     const pool = await this.pool();
-    const conditions: string[] = [];
+    // order_no IS NOT NULL restricts to website orders (native storefront rows);
+    // other-channel sales_orders (direct/b2b/…) aren't part of this domain.
+    const conditions: string[] = ["order_no IS NOT NULL"];
     const vals: unknown[] = [];
-    if (filter?.status) {
-      vals.push(filter.status);
-      conditions.push(`status = $${vals.length}`);
-    }
     if (filter?.userId) {
       vals.push(filter.userId);
       conditions.push(`user_id = $${vals.length}`);
     }
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const { rows } = await pool.query(`SELECT * FROM orders ${where} ORDER BY created_at DESC`, vals);
-    return rows.map((r) => this.rowToOrder(r));
+    const { rows } = await pool.query(
+      `SELECT * FROM ops.sales_orders WHERE ${conditions.join(" AND ")} ORDER BY ordered_at DESC`,
+      vals,
+    );
+    let orders = rows.map((r) => this.rowToOrder(r));
+    // status is single-axis (derived), so filter it in JS after mapping.
+    if (filter?.status) orders = orders.filter((o) => o.status === filter.status);
+    return orders;
   }
 
   async findStalePending(before: string): Promise<Order[]> {
     const pool = await this.pool();
     const { rows } = await pool.query(
-      `SELECT * FROM orders WHERE status = 'PENDING' AND expiry_link IS NOT NULL AND expiry_link < $1`,
+      `SELECT * FROM ops.sales_orders
+        WHERE order_no IS NOT NULL AND payment_status = 'unpaid' AND status = 'pending'
+          AND expiry_link IS NOT NULL AND expiry_link < $1`,
       [before],
     );
     return rows.map((r) => this.rowToOrder(r));

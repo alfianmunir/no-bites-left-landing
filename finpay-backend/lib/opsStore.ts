@@ -1208,6 +1208,98 @@ export async function syncWebsiteOrders(): Promise<{ created: number; flagged: n
   return { created, flagged };
 }
 
+/**
+ * Realize the finance side of a NATIVE website order when it is paid (Phase 10).
+ * The order already exists in ops.sales_orders (created unpaid at checkout by the
+ * OrderStore); its payment_status is flipped to paid by the webhook via
+ * setStatus. This adds the finance effect ONCE: maps each item's SKU via
+ * menu_product_map → sales_lines (COGS at made-cost) + a 'sale' stock_move
+ * (draws finished goods down), and posts the cash-in NET of the channel fee.
+ *
+ * Idempotent: no-ops if the order already has sales_lines or a website cash
+ * entry (so a duplicate PAID callback can't double-book). RESILIENT: still posts
+ * cash even if some/all SKUs are unmapped — those lines are skipped and the order
+ * is `flagged` for menu-mapping. Keyed on order_no.
+ */
+export async function realizeWebsiteOrderPayment(orderNo: string): Promise<{ realized: boolean; flagged: boolean }> {
+  const p = await pool();
+  const channel = await getWebsiteChannel(p);
+  if (!channel) return { realized: false, flagged: false };
+
+  const { rows } = await p.query(
+    `SELECT id, items, amount FROM ops.sales_orders WHERE order_no = $1 AND channel_id = $2`,
+    [orderNo, channel.id],
+  );
+  const so = rows[0];
+  if (!so) return { realized: false, flagged: false };
+  const soId = so.id as string;
+
+  // Idempotency: already realized (has lines or a website cash entry)?
+  const done = await p.query(
+    `SELECT 1 FROM ops.sales_lines WHERE sales_order_id = $1
+     UNION ALL
+     SELECT 1 FROM ops.cash_entries WHERE ref_type = 'sales_order' AND ref_id = $1 AND category = 'sales_website'
+     LIMIT 1`,
+    [soId],
+  );
+  if (done.rows[0]) return { realized: false, flagged: false };
+
+  const items: Array<{ sku?: string; qty?: number | string; unit_price?: number | string }> = Array.isArray(so.items) ? so.items : [];
+  const lines: Array<{ productId: string; qty: number; unitPrice: number }> = [];
+  let anyUnmapped = false;
+  for (const it of items) {
+    const sku = typeof it.sku === "string" ? it.sku : "";
+    const qty = Number(it.qty) || 0;
+    const unitPrice = Number(it.unit_price) || 0;
+    if (!sku || qty <= 0) continue;
+    const m = await p.query(`SELECT product_id, qty_per FROM ops.menu_product_map WHERE menu_sku = $1`, [sku]);
+    if (!m.rows[0]) { anyUnmapped = true; continue; }
+    const qtyPer = num(m.rows[0].qty_per) || 1;
+    lines.push({ productId: m.rows[0].product_id as string, qty: qty * qtyPer, unitPrice: qtyPer > 0 ? unitPrice / qtyPer : unitPrice });
+  }
+  const flagged = anyUnmapped || lines.length === 0;
+  const amount = num(so.amount);
+
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    for (const l of lines) {
+      const macQ = await client.query(
+        `SELECT CASE WHEN COALESCE(sum(qty), 0) > 0 THEN sum(qty * unit_cost) / sum(qty)
+                     ELSE (SELECT std_cost FROM ops.products WHERE id = $1) END AS mac
+           FROM ops.stock_moves WHERE product_id = $1`,
+        [l.productId],
+      );
+      const madeCost = num(macQ.rows[0]?.mac);
+      await client.query(
+        `INSERT INTO ops.sales_lines (sales_order_id, product_id, qty, unit_price, unit_cogs) VALUES ($1, $2, $3, $4, $5)`,
+        [soId, l.productId, l.qty, l.unitPrice, madeCost],
+      );
+      await client.query(
+        `INSERT INTO ops.stock_moves (product_id, qty, reason, ref_type, ref_id, unit_cost) VALUES ($1, $2, 'sale', 'sales_order', $3, $4)`,
+        [l.productId, -l.qty, soId, madeCost],
+      );
+    }
+    // Cash-in NET of the channel gateway fee (ties to Finpay's net settlement +
+    // the P&L's net revenue).
+    const net = amount > 0 ? amount - (amount * channel.feePct + channel.feeFlat) : 0;
+    if (net > 0) {
+      await client.query(
+        `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+         VALUES ('in', $1, 'bank', 'sales_website', 'sales_order', $2, CURRENT_DATE, $3)`,
+        [net, soId, orderNo],
+      );
+    }
+    await client.query("COMMIT");
+    return { realized: true, flagged };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export interface WebsiteOrderDrift {
   orderId: string;
   status: string;
