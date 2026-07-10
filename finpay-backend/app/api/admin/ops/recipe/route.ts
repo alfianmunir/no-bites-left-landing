@@ -4,6 +4,7 @@ import { isAdminSession } from "@/lib/adminAuth";
 import {
   opsEnabled,
   createRecipe,
+  createProductWithRecipe,
   updateRecipeYield,
   addRecipeLine,
   updateRecipeLine,
@@ -26,6 +27,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     itemId?: string;
     qty?: number | string;
     batchYieldQty?: number | string;
+    // createProduct (new product + recipe in one go)
+    sku?: string;
+    name?: string;
+    variant?: string;
+    listPrice?: number | string;
   };
   try {
     body = await req.json();
@@ -38,6 +44,21 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   try {
     switch (body.action) {
+      case "createProduct": {
+        // New finished good + its recipe in one transaction — the "add recipe"
+        // flow when the product doesn't exist yet.
+        const sku = typeof body.sku === "string" ? body.sku.trim().toUpperCase() : "";
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        const variant = typeof body.variant === "string" && body.variant.trim() ? body.variant.trim() : null;
+        const listPrice = Number(body.listPrice);
+        if (!sku || !/^[A-Z0-9-]+$/.test(sku)) return NextResponse.json({ error: "SKU must be letters/digits/dashes" }, { status: 400 });
+        if (!name) return NextResponse.json({ error: "name is required" }, { status: 400 });
+        if (!Number.isFinite(listPrice) || listPrice <= 0) return NextResponse.json({ error: "enter a list price greater than 0" }, { status: 400 });
+        if (!Number.isFinite(yieldQty) || yieldQty <= 0) return NextResponse.json({ error: "enter a batch yield greater than 0" }, { status: 400 });
+        const created = await createProductWithRecipe({ sku, name, variant, listPrice, batchYieldQty: yieldQty });
+        logOrder("ops_product_recipe_create", { ...created, sku });
+        return NextResponse.json({ ok: true, ...created });
+      }
       case "createRecipe": {
         if (!body.productId) return NextResponse.json({ error: "missing product" }, { status: 400 });
         if (!Number.isFinite(yieldQty) || yieldQty <= 0) return NextResponse.json({ error: "enter a batch yield greater than 0" }, { status: 400 });
@@ -85,7 +106,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         return NextResponse.json({ error: "unknown action" }, { status: 400 });
     }
   } catch (e) {
-    logOrder("ops_recipe_failed", { action: body.action, error: String(e) });
+    const msg = String(e);
+    if (msg.includes("duplicate key")) return NextResponse.json({ error: "that SKU already exists" }, { status: 409 });
+    logOrder("ops_recipe_failed", { action: body.action, error: msg });
     return NextResponse.json({ error: "Save failed — try again." }, { status: 500 });
   }
 }

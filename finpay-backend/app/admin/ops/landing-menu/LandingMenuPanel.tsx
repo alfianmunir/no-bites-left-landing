@@ -60,10 +60,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function EditForm({ draft, setDraft, isNew, onDone }: { draft: Draft; setDraft: (d: Draft) => void; isNew: boolean; onDone: () => void }) {
+function EditForm({ draft, setDraft, isNew, onDone, families }: { draft: Draft; setDraft: (d: Draft) => void; isNew: boolean; onDone: () => void; families: string[] }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Family is a dropdown of existing families, with a "new family" escape hatch
+  // that turns it into a free-text input.
+  const [newFamily, setNewFamily] = useState(() => draft.family !== "" && !families.includes(draft.family));
   const set = (patch: Partial<Draft>) => setDraft({ ...draft, ...patch });
 
   const save = async () => {
@@ -92,7 +95,26 @@ function EditForm({ draft, setDraft, isNew, onDone }: { draft: Draft; setDraft: 
             onChange={(e) => set({ sku: e.target.value.toLowerCase() })} placeholder="og-40" />
         </Field>
         <Field label="Family">
-          <input style={inputStyle} value={draft.family} onChange={(e) => set({ family: e.target.value.toLowerCase() })} placeholder="og" />
+          {newFamily ? (
+            <div style={{ display: "flex", gap: 6 }}>
+              <input style={inputStyle} value={draft.family} onChange={(e) => set({ family: e.target.value.toLowerCase() })} placeholder="new family (og)" autoFocus />
+              <button type="button" onClick={() => { setNewFamily(false); set({ family: families[0] ?? "" }); }}
+                style={{ border: "none", background: "transparent", color: "var(--soft)", fontSize: 13, cursor: "pointer", flexShrink: 0 }} aria-label="back to list">↩</button>
+            </div>
+          ) : (
+            <select
+              style={inputStyle}
+              value={families.includes(draft.family) ? draft.family : ""}
+              onChange={(e) => {
+                if (e.target.value === "__new__") { setNewFamily(true); set({ family: "" }); }
+                else set({ family: e.target.value });
+              }}
+            >
+              <option value="" disabled>— pick family —</option>
+              {families.map((f) => <option key={f} value={f}>{f}</option>)}
+              <option value="__new__">＋ New family…</option>
+            </select>
+          )}
         </Field>
         <Field label="Sort order">
           <input type="number" style={inputStyle} value={draft.sortOrder} onChange={(e) => set({ sortOrder: e.target.value })} />
@@ -143,7 +165,7 @@ function EditForm({ draft, setDraft, isNew, onDone }: { draft: Draft; setDraft: 
   );
 }
 
-function ItemCard({ item }: { item: MenuItem }) {
+function ItemCard({ item, families }: { item: MenuItem; families: string[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<Draft>(() => toDraft(item));
@@ -183,7 +205,7 @@ function ItemCard({ item }: { item: MenuItem }) {
           style={{ border: "none", background: "transparent", color: "var(--red)", fontSize: 15, cursor: "pointer" }}>🗑</button>
         <span style={{ color: "var(--soft)", fontSize: 12, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
       </div>
-      {open && <EditForm draft={draft} setDraft={setDraft} isNew={false} onDone={() => setOpen(false)} />}
+      {open && <EditForm draft={draft} setDraft={setDraft} isNew={false} onDone={() => setOpen(false)} families={families} />}
     </div>
   );
 }
@@ -199,6 +221,7 @@ export default function LandingMenuPanel({ items }: { items: MenuItem[] }) {
     if (f) f.list.push(m);
     else families.push({ family: m.family, list: [m] });
   }
+  const familyNames = families.map((f) => f.family);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -206,7 +229,7 @@ export default function LandingMenuPanel({ items }: { items: MenuItem[] }) {
         {adding ? (
           <>
             <div style={{ fontWeight: 900, fontSize: 14.5, color: "var(--choco)" }}>New menu item</div>
-            <EditForm draft={draft} setDraft={setDraft} isNew onDone={() => { setAdding(false); setDraft(emptyDraft()); }} />
+            <EditForm draft={draft} setDraft={setDraft} isNew onDone={() => { setAdding(false); setDraft(emptyDraft()); }} families={familyNames} />
           </>
         ) : (
           <button onClick={() => setAdding(true)} style={{ border: "none", background: "transparent", color: "var(--choco)", fontWeight: 900, fontSize: 13.5, cursor: "pointer", width: "100%", textAlign: "left" }}>
@@ -221,7 +244,7 @@ export default function LandingMenuPanel({ items }: { items: MenuItem[] }) {
             {family} · {list.length}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {list.map((m) => <ItemCard key={m.sku} item={m} />)}
+            {list.map((m) => <ItemCard key={m.sku} item={m} families={familyNames} />)}
           </div>
         </div>
       ))}

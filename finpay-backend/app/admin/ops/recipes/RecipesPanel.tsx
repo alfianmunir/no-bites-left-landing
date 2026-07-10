@@ -162,9 +162,69 @@ function RecipeCard({ pr, items }: { pr: ProductRecipeRow; items: ItemDetailRow[
   );
 }
 
+// ---------------------------------------------------------------- Add recipe
+// Creates a NEW finished-good product together with its recipe (one txn) — for
+// when the product doesn't exist yet. The new card then appears in the list
+// where ingredients/packaging get added.
+function AddRecipe() {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [sku, setSku] = useState("");
+  const [variant, setVariant] = useState("");
+  const [listPrice, setListPrice] = useState("");
+  const [yieldQty, setYieldQty] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    const { ok, d } = await post({ action: "createProduct", sku: sku.trim(), name: name.trim(), variant: variant.trim(), listPrice: Number(listPrice), batchYieldQty: Number(yieldQty) });
+    setBusy(false);
+    if (!ok) { setError((d as { error?: string }).error ?? "failed"); return; }
+    setOpen(false);
+    setName(""); setSku(""); setVariant(""); setListPrice(""); setYieldQty("");
+    router.refresh();
+  };
+
+  return (
+    <div style={{ ...card, borderStyle: open ? "solid" : "dashed" }}>
+      {open ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontWeight: 900, fontSize: 14.5, color: "var(--choco)" }}>New recipe (new product)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 10 }}>
+            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Product name (e.g. Red Velvet)" />
+            <input style={inputStyle} value={sku} onChange={(e) => setSku(e.target.value.toUpperCase())} placeholder="SKU (CKE-RDV)" />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <input style={inputStyle} value={variant} onChange={(e) => setVariant(e.target.value)} placeholder="Variant (optional)" />
+            <input type="number" inputMode="numeric" min="0" style={inputStyle} value={listPrice} onChange={(e) => setListPrice(e.target.value)} placeholder="List price (Rp)" />
+            <input type="number" inputMode="numeric" min="0" style={inputStyle} value={yieldQty} onChange={(e) => setYieldQty(e.target.value)} placeholder="Batch yield (pcs)" />
+          </div>
+          {error && <div style={{ fontSize: 12.5, color: "var(--red)", fontWeight: 700 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={create} disabled={busy || !name.trim() || !sku.trim() || !listPrice || !yieldQty}
+              style={{ padding: "9px 16px", borderRadius: 10, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 13, cursor: "pointer" }}>
+              {busy ? "Creating…" : "Create recipe"}
+            </button>
+            <button onClick={() => setOpen(false)} style={{ padding: "9px 14px", borderRadius: 10, border: "1.5px solid var(--line)", background: "#fff", color: "var(--soft)", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--soft)" }}>Cost (std_cost) starts empty and fills in from the first closed batch. Then expand the new card below to add its ingredients &amp; packaging.</div>
+        </div>
+      ) : (
+        <button onClick={() => setOpen(true)} style={{ border: "none", background: "transparent", color: "var(--choco)", fontWeight: 900, fontSize: 13.5, cursor: "pointer", width: "100%", textAlign: "left" }}>
+          + Add recipe (new product)
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function RecipesPanel({ recipes, items }: { recipes: ProductRecipeRow[]; items: ItemDetailRow[] }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <AddRecipe />
       {recipes.map((pr) => <RecipeCard key={pr.productId} pr={pr} items={items} />)}
     </div>
   );

@@ -2590,6 +2590,42 @@ export async function createRecipe(productId: string, batchYieldQty: number): Pr
   return rows[0].id as string;
 }
 
+/**
+ * Create a brand-new finished-good product together with its (empty) recipe in
+ * one transaction — the "add recipe" flow when the product doesn't exist yet.
+ * std_cost starts NULL and rolls in from the first closed batch; list price is
+ * required by the schema (and Pricing reads it).
+ */
+export async function createProductWithRecipe(input: {
+  sku: string;
+  name: string;
+  variant: string | null;
+  listPrice: number;
+  batchYieldQty: number;
+}): Promise<{ productId: string; recipeId: string }> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const prod = await client.query(
+      `INSERT INTO ops.products (sku, name, variant, list_price) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [input.sku.trim(), input.name.trim(), input.variant, input.listPrice],
+    );
+    const productId = prod.rows[0].id as string;
+    const rec = await client.query(
+      `INSERT INTO ops.recipes (product_id, batch_yield_qty) VALUES ($1, $2) RETURNING id`,
+      [productId, input.batchYieldQty],
+    );
+    await client.query("COMMIT");
+    return { productId, recipeId: rec.rows[0].id as string };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export async function updateRecipeYield(recipeId: string, batchYieldQty: number): Promise<boolean> {
   const p = await pool();
   const { rowCount } = await p.query(`UPDATE ops.recipes SET batch_yield_qty = $2 WHERE id = $1`, [recipeId, batchYieldQty]);
