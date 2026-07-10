@@ -3,7 +3,8 @@ import Link from "next/link";
 import { isAdminSession } from "@/lib/adminAuth";
 import { opsEnabled, listSalesOrders, reconcileWebsiteFinance, type SalesOrderRow } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
-import { OpsShell, DbNotice, rupiah, qty } from "../OpsChrome";
+import { OpsShell, DbNotice, qty } from "../OpsChrome";
+import BoardOrderLine from "./BoardOrderLine";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,25 +29,6 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
     <div style={{ ...card, flex: "1 1 120px", minWidth: 110 }}>
       <div style={{ fontSize: 11, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.03em" }}>{label}</div>
       <div style={{ fontSize: 22, fontWeight: 900, color: tone ?? "var(--ink)", marginTop: 4 }}>{value}</div>
-    </div>
-  );
-}
-
-function OrderLine({ o }: { o: SalesOrderRow }) {
-  const st = STAGES.find((s) => s.key === o.fulfillmentStatus);
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid var(--line)", flexWrap: "wrap" }}>
-      <div style={{ minWidth: 150, flex: 1 }}>
-        <div style={{ fontSize: 13, fontWeight: 700 }}>
-          {o.customerRef || "—"} <span style={{ color: "var(--soft)", fontWeight: 600, fontSize: 11.5 }}>· {o.channel}</span>
-          {o.paymentStatus === "unpaid" && o.channel !== "b2b" && <span style={{ color: "var(--orange)", fontWeight: 800, fontSize: 11 }}> · unpaid</span>}
-        </div>
-        {o.items.length > 0 && <div style={{ fontSize: 12, color: "var(--soft)" }}>{itemsSummary(o.items)}</div>}
-      </div>
-      <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-        {o.pickupDate && <div style={{ fontSize: 11.5, fontWeight: 800, color: "var(--choco)" }}>🛍 {o.pickupDate}</div>}
-        <span style={{ fontSize: 10.5, fontWeight: 800, color: "#fff", background: st?.color ?? "var(--soft)", borderRadius: 999, padding: "2px 8px" }}>{st?.label ?? o.fulfillmentStatus}</span>
-      </div>
     </div>
   );
 }
@@ -102,7 +84,7 @@ export default async function OpsBoardPage() {
               {pickupGroups.map(({ g, list }) => (
                 <div key={g} style={{ ...card, borderColor: g === "Overdue" ? "var(--red)" : g === "Today" ? "var(--choco)" : "var(--line)" }}>
                   <div style={{ fontSize: 12.5, fontWeight: 900, color: g === "Overdue" ? "var(--red)" : "var(--choco)" }}>{g} <span style={{ color: "var(--soft)", fontWeight: 700 }}>· {list.length}</span></div>
-                  {list.map((o) => <OrderLine key={o.id} o={o} />)}
+                  {list.map((o) => <BoardOrderLine key={o.id} o={o} itemsLine={itemsSummary(o.items)} />)}
                 </div>
               ))}
             </div>
@@ -121,7 +103,7 @@ export default async function OpsBoardPage() {
                 return (
                   <div key={s.key} style={{ ...card, borderLeft: `4px solid ${s.color}` }}>
                     <div style={{ fontSize: 12.5, fontWeight: 900, color: "var(--ink)" }}>{s.label} <span style={{ color: "var(--soft)", fontWeight: 700 }}>· {list.length}</span></div>
-                    {list.length === 0 ? <div style={{ fontSize: 12, color: "var(--soft)", marginTop: 4 }}>—</div> : list.map((o) => <OrderLine key={o.id} o={o} />)}
+                    {list.length === 0 ? <div style={{ fontSize: 12, color: "var(--soft)", marginTop: 4 }}>—</div> : list.map((o) => <BoardOrderLine key={o.id} o={o} itemsLine={itemsSummary(o.items)} />)}
                   </div>
                 );
               })}

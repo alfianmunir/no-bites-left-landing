@@ -308,21 +308,30 @@ a { cursor: pointer; }
 }
 
 /* ---------------------------------------------------------------- Ops shell
-   Mobile-first single column (720px) that opens up on iPad / desktop. The nav
-   chip rows stay horizontal (scroll on phone, fit on wide screens); the content
-   area widens and gains breathing room so tables and forms don't look cramped. */
-.ops-shell { max-width: 720px; margin: 0 auto; min-height: 100dvh; background: var(--surface2); }
-.ops-body { padding: 14px 20px 48px; }
-/* Nav rows share the body's horizontal inset (vertical padding stays inline) so
-   chips line up with the content edge at every width. */
-.ops-navrow { padding-left: 20px; padding-right: 20px; }
-@media (min-width: 768px) {
-  .ops-shell { max-width: 900px; }
-  .ops-body { padding: 20px 28px 64px; }
-  .ops-navrow { padding-left: 28px; padding-right: 28px; }
-}
-@media (min-width: 1180px) {
-  .ops-shell { max-width: 1080px; }
-  .ops-body { padding: 24px 36px 72px; }
-  .ops-navrow { padding-left: 36px; padding-right: 36px; }
+   Two modes at one breakpoint (900px), CSS-only (no JS resize):
+   • <900px — mobile-first single column, the two-row chip nav on top (kitchen,
+     phone in hand). • ≥900px — a persistent grouped dark sidebar + wide content.
+   Both are always rendered by the server component; CSS picks one. */
+.ops2-root { min-height: 100dvh; background: var(--surface2); }
+.ops2-main { min-width: 0; }
+.ops2-sidebar { display: none; }
+.ops2-header { display: none; }
+.ops2-chipsbar { position: sticky; top: 0; z-index: 20; background: var(--surface2); border-bottom: 1.5px solid var(--line); padding-bottom: 12px; }
+/* Sidebar nav items (rendered only inside .ops2-sidebar, hidden <900px). */
+.ops2-navitem { display: block; padding: 8px 12px; border-radius: 10px; font-size: 13px; font-weight: 800; text-decoration: none; color: rgba(244, 235, 221, 0.72); }
+.ops2-navitem:hover { background: rgba(255, 255, 255, 0.08); }
+.ops2-navitem.on, .ops2-navitem.on:hover { background: var(--orange); color: #241503; }
+/* Nav rows share the body's horizontal inset so chips line up with content. */
+.ops2-navrow { padding-left: clamp(14px, 3.5vw, 30px); padding-right: clamp(14px, 3.5vw, 30px); }
+.ops2-body { max-width: 1140px; padding: 20px clamp(14px, 3.5vw, 30px) 90px; box-sizing: border-box; }
+
+@media (min-width: 900px) {
+  .ops2-root { display: grid; grid-template-columns: 218px 1fr; }
+  .ops2-sidebar {
+    display: flex; flex-direction: column;
+    position: sticky; top: 0; height: 100dvh; overflow-y: auto;
+    background: var(--dark); color: var(--on-dark); padding: 18px 12px;
+  }
+  .ops2-chipsbar { display: none; }
+  .ops2-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; justify-content: space-between; padding: 16px clamp(14px, 3.5vw, 30px) 0; }
 }

@@ -122,6 +122,8 @@ function chipStyle(on: boolean): React.CSSProperties {
   };
 }
 
+const sideItem = (on: boolean) => "ops2-navitem" + (on ? " on" : "");
+
 export async function OpsShell({
   active,
   title,
@@ -143,64 +145,108 @@ export async function OpsShell({
   const showSub = activeGroup && activeGroup.tabs.length > 1;
 
   return (
-    <main className="ops-shell">
-      {/* Sticky nav — stays reachable while scrolling long stock / ledger lists. */}
-      <div style={{ position: "sticky", top: 0, zIndex: 20, background: "var(--surface2)", borderBottom: "1.5px solid var(--line)", paddingBottom: showSub ? 10 : 12 }}>
-        <div className="ops-navrow" style={{ paddingTop: 18, paddingBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <div>
-            <div style={{ fontWeight: 900, fontSize: 18, color: "var(--choco)" }}>{title}</div>
-            {subtitle && <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>{subtitle}</div>}
+    <div className="ops2-root">
+      {/* ≥900px — persistent grouped sidebar (kitchen desktop). Hidden on phones. */}
+      <nav className="ops2-sidebar">
+        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "2px 8px 16px" }}>
+          <img src="/images/mini-cookies.png" alt="" width={34} height={34} style={{ objectFit: "contain", flexShrink: 0 }} />
+          <div style={{ lineHeight: 1.05 }}>
+            <div className="font-display" style={{ fontSize: 15, color: "var(--on-dark)" }}>No Bites Left</div>
+            <div style={{ fontSize: 9.5, fontWeight: 900, letterSpacing: "0.16em", opacity: 0.55, marginTop: 2 }}>OPS</div>
           </div>
-          {role === "super_admin" && (
-            <Link href="/admin" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>‹ Queue</Link>
+        </div>
+
+        <Link href={HOME.href} className={sideItem(onHome)}>🗓️ {HOME.label}</Link>
+
+        {groups.map((g) => (
+          <div key={g.label}>
+            <div style={{ fontSize: 10, fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.05em", opacity: 0.42, padding: "14px 12px 5px" }}>
+              {g.icon} {g.label}
+            </div>
+            {g.tabs.map((t) => (
+              <Link key={t.href} href={t.href} className={sideItem(t.href === active)}>
+                {t.label}
+              </Link>
+            ))}
+          </div>
+        ))}
+
+        <div style={{ flex: 1 }} />
+        {role === "super_admin" && (
+          <Link href="/admin" style={{ padding: "10px 12px", fontSize: 12.5, fontWeight: 800, color: "rgba(244,235,221,0.6)", textDecoration: "none" }}>‹ Queue</Link>
+        )}
+      </nav>
+
+      <div className="ops2-main">
+        {/* ≥900px — page header (title + subtitle). No bell / lang toggle this pass. */}
+        <header className="ops2-header">
+          <div>
+            <div className="font-display" style={{ fontSize: "clamp(20px,3vw,25px)", color: "var(--choco)" }}>{title}</div>
+            {subtitle && <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--soft)", marginTop: 3 }}>{subtitle}</div>}
+          </div>
+        </header>
+
+        {/* <900px — brand + title header, then the two-row chip nav (unchanged). */}
+        <div className="ops2-chipsbar">
+          <div className="ops2-navrow" style={{ paddingTop: 16, paddingBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <img src="/images/mini-cookies.png" alt="" width={32} height={32} style={{ objectFit: "contain", flexShrink: 0 }} />
+              <div>
+                <div className="font-display" style={{ fontSize: 20, color: "var(--choco)" }}>{title}</div>
+                {subtitle && <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>{subtitle}</div>}
+              </div>
+            </div>
+            {role === "super_admin" && (
+              <Link href="/admin" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>‹ Queue</Link>
+            )}
+          </div>
+
+          {/* Row 1 — Today + category chips (each links to its first screen). */}
+          <div className="ops2-navrow" style={{ paddingTop: 6, display: "flex", gap: 6, overflowX: "auto" }}>
+            <Link href={HOME.href} style={chipStyle(onHome)}>
+              <span aria-hidden style={{ fontSize: 14 }}>🗓️</span>
+              {HOME.label}
+            </Link>
+            {groups.map((g) => (
+              <Link key={g.label} href={g.tabs[0].href} style={chipStyle(activeGroup?.label === g.label)}>
+                <span aria-hidden style={{ fontSize: 14 }}>{g.icon}</span>
+                {g.label}
+              </Link>
+            ))}
+          </div>
+
+          {/* Row 2 — screens within the active category (hidden on Today, and for
+              single-screen categories where the chip already lands you there). */}
+          {showSub && (
+            <div className="ops2-navrow" style={{ paddingTop: 10, paddingBottom: 4, display: "flex", gap: 6, overflowX: "auto", alignItems: "center" }}>
+              <span aria-hidden style={{ fontSize: 15, marginRight: 2, flexShrink: 0 }}>{activeGroup!.icon}</span>
+              {activeGroup!.tabs.map((t) => {
+                const on = t.href === active;
+                return (
+                  <Link
+                    key={t.href}
+                    href={t.href}
+                    style={{
+                      ...chipBase,
+                      padding: "6px 12px",
+                      fontSize: 12.5,
+                      border: `1.5px solid ${on ? "var(--choco)" : "var(--line)"}`,
+                      background: on ? "var(--surface)" : "transparent",
+                      color: on ? "var(--choco)" : "var(--soft)",
+                      fontWeight: on ? 800 : 700,
+                    }}
+                  >
+                    {t.label}
+                  </Link>
+                );
+              })}
+            </div>
           )}
         </div>
 
-        {/* Row 1 — Today + category chips (each links to its first screen). */}
-        <div className="ops-navrow" style={{ paddingTop: 6, display: "flex", gap: 6, overflowX: "auto" }}>
-          <Link href={HOME.href} style={chipStyle(onHome)}>
-            <span aria-hidden style={{ fontSize: 14 }}>🗓️</span>
-            {HOME.label}
-          </Link>
-          {groups.map((g) => (
-            <Link key={g.label} href={g.tabs[0].href} style={chipStyle(activeGroup?.label === g.label)}>
-              <span aria-hidden style={{ fontSize: 14 }}>{g.icon}</span>
-              {g.label}
-            </Link>
-          ))}
-        </div>
-
-        {/* Row 2 — screens within the active category (hidden on Today, and for
-            single-screen categories where the chip already lands you there). */}
-        {showSub && (
-          <div className="ops-navrow" style={{ paddingTop: 10, display: "flex", gap: 6, overflowX: "auto", alignItems: "center" }}>
-            <span aria-hidden style={{ fontSize: 15, marginRight: 2, flexShrink: 0 }}>{activeGroup!.icon}</span>
-            {activeGroup!.tabs.map((t) => {
-              const on = t.href === active;
-              return (
-                <Link
-                  key={t.href}
-                  href={t.href}
-                  style={{
-                    ...chipBase,
-                    padding: "6px 12px",
-                    fontSize: 12.5,
-                    border: `1.5px solid ${on ? "var(--choco)" : "var(--line)"}`,
-                    background: on ? "var(--surface)" : "transparent",
-                    color: on ? "var(--choco)" : "var(--soft)",
-                    fontWeight: on ? 800 : 700,
-                  }}
-                >
-                  {t.label}
-                </Link>
-              );
-            })}
-          </div>
-        )}
+        <div className="ops2-body">{children}</div>
       </div>
-
-      <div className="ops-body">{children}</div>
-    </main>
+    </div>
   );
 }
 
