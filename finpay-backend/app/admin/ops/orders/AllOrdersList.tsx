@@ -15,8 +15,8 @@
  */
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { computeEconomics, agingBucket, formatPct, type AgingBucket } from "@/lib/opsOrderMath";
-import type { SalesOrderRow, InvoiceRow, PricingProductRow } from "@/lib/opsStore";
+import { agingBucket, formatPct, type AgingBucket } from "@/lib/opsOrderMath";
+import type { SalesOrderRow, InvoiceRow } from "@/lib/opsStore";
 import type { Order } from "@/lib/orders";
 import AdminOrderDetail from "@/app/_components/AdminOrderDetail";
 
@@ -110,7 +110,7 @@ export default function AllOrdersList({
   expired,
   today,
   tomorrow,
-  products,
+  webEcon,
   websiteFee,
 }: {
   webOrders: Order[];
@@ -119,7 +119,9 @@ export default function AllOrdersList({
   expired: Order[];
   today: string;
   tomorrow: string;
-  products: PricingProductRow[];
+  // Realized economics per website order_no (from sales_lines). Falls back to
+  // item-sum gross with no COGS when an order isn't realized yet.
+  webEcon: Record<string, { gross: number; cogs: number; feePct: number; feeFlat: number }>;
   websiteFee: { pct: number; flat: number };
 }) {
   const router = useRouter();
@@ -132,25 +134,29 @@ export default function AllOrdersList({
   const [busy, setBusy] = useState(false);
   const [openOrder, setOpenOrder] = useState<Order | null>(null);
 
-  const costBySku = useMemo(() => new Map(products.map((p) => [p.sku, p.stdCost])), [products]);
-
   // Normalize both order types into one row shape.
   const rows = useMemo<UnifiedRow[]>(() => {
     const out: UnifiedRow[] = [];
     for (const o of webOrders) {
       const status = (o.status in WEB ? o.status : "PAID") as WebStatus;
-      const econ = computeEconomics(
-        o.items.map((it) => ({ qty: it.qty, unitPrice: it.unit_price, unitCogs: costBySku.get(it.sku) ?? 0 })),
-        websiteFee.pct,
-        websiteFee.flat,
-      );
+      // Prefer the realized economics (real COGS from sales_lines). Website items
+      // carry the menu sku, so cost can't be derived here — fall back to item-sum
+      // gross with no COGS only when the order isn't realized yet.
+      const e = webEcon[o.id];
+      const gross = e ? e.gross : o.items.reduce((s, it) => s + it.unit_price * it.qty, 0);
+      const feePct = e ? e.feePct : websiteFee.pct;
+      const feeFlat = e ? e.feeFlat : websiteFee.flat;
+      const fee = gross > 0 ? gross * feePct + feeFlat : 0;
+      const cogs = e ? e.cogs : 0;
+      const net = gross - fee - cogs;
+      const margin = gross > 0 ? net / gross : 0;
       const name = `${o.customer.firstName} ${o.customer.lastName}`.trim();
       const itemsLine = itemsSummary(o.items);
       out.push({
         key: `w:${o.id}`, id: o.id, dateKey: o.pickup_date ?? o.created_at.slice(0, 10),
         kind: "website", title: `#${o.id} · ${name || "—"}`, badge: "website", itemsLine,
         search: `${o.id} ${name} ${itemsLine} website`.toLowerCase(),
-        gross: econ.gross, fee: econ.fee, net: econ.net, margin: econ.marginPct, hasFee: websiteFee.pct > 0,
+        gross, fee, net, margin, hasFee: feePct > 0,
         paid: true, order: o, webStatus: status,
         overdue: !!o.pickup_date && o.pickup_date < today, isNew: status === "PAID",
       });
@@ -168,7 +174,7 @@ export default function AllOrdersList({
       });
     }
     return out;
-  }, [webOrders, channelOrders, costBySku, websiteFee.pct, websiteFee.flat, today]);
+  }, [webOrders, channelOrders, webEcon, websiteFee.pct, websiteFee.flat, today]);
 
   // Filters (client-side).
   const q = search.trim().toLowerCase();

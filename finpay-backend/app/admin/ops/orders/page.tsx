@@ -22,6 +22,7 @@ import {
   listInvoices,
   listPreparingItems,
   listUnmappedWebsiteSkus,
+  listWebsiteOrderEconomics,
   reconcileWebsiteFinance,
 } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
@@ -62,7 +63,7 @@ export default async function OpsOrdersPage() {
           expired={expired}
           today={today}
           tomorrow={tomorrow}
-          products={[]}
+          webEcon={{}}
           websiteFee={{ pct: 0, flat: 0 }}
         />
         <div style={{ marginTop: 18 }}><DbNotice /></div>
@@ -78,13 +79,14 @@ export default async function OpsOrdersPage() {
     logOrder("ops_website_reconcile_failed", { error: String(e) });
   }
 
-  const [channels, products, salesOrders, invoices, prep, unmappedSkus] = await Promise.all([
+  const [channels, products, salesOrders, invoices, prep, unmappedSkus, webEcon] = await Promise.all([
     listChannels(),
     listPricingProducts(),
     listSalesOrders(),
     listInvoices(),
     listPreparingItems(),
     listUnmappedWebsiteSkus(),
+    listWebsiteOrderEconomics(active.map((o) => o.id)),
   ]);
   // Website orders live in the queue section; the manual channels here. Website
   // is also excluded from the entry form — storefront orders are born native.
@@ -126,7 +128,7 @@ export default async function OpsOrdersPage() {
             expired={expired}
             today={today}
             tomorrow={tomorrow}
-            products={products}
+            webEcon={webEcon}
             websiteFee={websiteFee}
           />
         </section>
