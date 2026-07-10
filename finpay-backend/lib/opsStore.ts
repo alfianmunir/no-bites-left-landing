@@ -1297,9 +1297,32 @@ async function applyOrderState(
 
   if (patch.paymentStatus) {
     await client.query(`UPDATE ops.sales_orders SET payment_status = $2 WHERE id = $1`, [orderId, patch.paymentStatus]);
-    // Post cash the first time a non-b2b order turns paid (b2b posts via its
-    // invoice). Idempotent: only if no sales cash entry exists for this order.
-    if (patch.paymentStatus === "paid" && row.payment_status !== "paid" && row.channel !== "b2b") {
+    const turnedPaid = patch.paymentStatus === "paid" && row.payment_status !== "paid";
+    if (row.channel === "b2b") {
+      // Closed loop: a b2b order's payment mirrors its invoice (paid ↔ 'sent').
+      // Settling here posts revenue exactly like paying the invoice directly —
+      // same idempotency key (ref_type='invoice') so neither path double-books.
+      const inv = await client.query(
+        `UPDATE ops.invoices SET status = $2 WHERE sales_order_id = $1 RETURNING id, amount`,
+        [orderId, patch.paymentStatus === "paid" ? "paid" : "sent"],
+      );
+      if (turnedPaid && inv.rows[0]) {
+        const invId = inv.rows[0].id as string;
+        const amount = num(inv.rows[0].amount);
+        if (amount > 0) {
+          await client.query(
+            `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, note)
+             SELECT 'in', $2, 'bank', 'sales_b2b', 'invoice', $1, 'B2B invoice paid'
+              WHERE NOT EXISTS (
+                SELECT 1 FROM ops.cash_entries WHERE ref_type = 'invoice' AND ref_id = $1 AND direction = 'in'
+              )`,
+            [invId, amount],
+          );
+        }
+      }
+    } else if (turnedPaid) {
+      // Post cash the first time a non-b2b order turns paid. Idempotent: only if
+      // no sales cash entry exists for this order.
       const gross = num(row.gross);
       const net = gross - (gross * num(row.fee_pct) + num(row.fee_flat));
       const isMarketplace = row.channel === "gofood" || row.channel === "grabfood" || row.channel === "shopeefood";
@@ -1409,10 +1432,15 @@ export async function listInvoices(): Promise<InvoiceRow[]> {
 }
 
 /** Update an invoice's AR status (draft/sent/paid/overdue/void). Invoice status
- *  is mutable AR state (not a ledger); the underlying sales_order is unchanged.
- *  Marking an invoice `paid` is the B2B revenue trigger (PRD §F3) — it posts a
- *  cash IN entry to `bank` once (idempotent on ref_type/ref_id), so re-marking
- *  or a later un-pay never double-books the receipt. */
+ *  is mutable AR state (not a ledger). Marking an invoice `paid` is the B2B
+ *  revenue trigger (PRD §F3) — it posts a cash IN entry to `bank` once
+ *  (idempotent on ref_type/ref_id), so re-marking or a later un-pay never
+ *  double-books the receipt.
+ *
+ *  Closed loop: the invoice and its linked sales_order.payment_status must never
+ *  diverge, so this also flips the order's payment (paid → 'paid', anything else
+ *  → 'unpaid') in the SAME transaction. The reverse sync (order → invoice) lives
+ *  in applyOrderState. */
 export async function setInvoiceStatus(invoiceId: string, status: string): Promise<boolean> {
   const allowed = ["draft", "sent", "paid", "overdue", "void"];
   if (!allowed.includes(status)) throw new Error("invalid invoice status");
@@ -1428,6 +1456,12 @@ export async function setInvoiceStatus(invoiceId: string, status: string): Promi
       await client.query("ROLLBACK");
       return false;
     }
+    // Keep the linked order in sync so the order card and AR row never disagree.
+    await client.query(
+      `UPDATE ops.sales_orders SET payment_status = $2
+        WHERE id = (SELECT sales_order_id FROM ops.invoices WHERE id = $1)`,
+      [invoiceId, status === "paid" ? "paid" : "unpaid"],
+    );
     if (status === "paid") {
       const amount = num(rows[0].amount);
       if (amount > 0) {
@@ -1443,6 +1477,153 @@ export async function setInvoiceStatus(invoiceId: string, status: string): Promi
     }
     await client.query("COMMIT");
     return true;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Reverse a sales order's cash + stock ledger effects on an OPEN transaction.
+ * Shared by channel cancel (cancelSalesOrder) and website cancel/refund
+ * (reverseWebsiteOrderFinance). Append-only + idempotent:
+ *   • stock — mirror each 'sale' draw-down with its positive twin at the same
+ *     unit_cost (QoH + moving-average return to baseline). Guarded on the twin
+ *     already existing, so a replay never double-returns stock.
+ *   • cash  — one compensating 'out' for the order's own cash-in (direct/canteen/
+ *     marketplace/website under ref_type='sales_order'), guarded on the reversal
+ *     already existing. B2B cash lives on the invoice and is handled by the caller.
+ */
+async function reverseSalesOrderLedgerTx(client: import("pg").PoolClient, salesOrderId: string): Promise<void> {
+  await client.query(
+    `INSERT INTO ops.stock_moves (product_id, qty, reason, ref_type, ref_id, unit_cost)
+     SELECT product_id, -qty, 'sale', 'sales_order', $1, unit_cost
+       FROM ops.stock_moves
+      WHERE ref_type = 'sales_order' AND ref_id = $1 AND reason = 'sale' AND qty < 0
+        AND NOT EXISTS (SELECT 1 FROM ops.stock_moves WHERE ref_type = 'sales_order' AND ref_id = $1 AND reason = 'sale' AND qty > 0)`,
+    [salesOrderId],
+  );
+  await client.query(
+    `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, note)
+     SELECT 'out', sum(amount), account, 'sales_reversal', 'sales_order_reversal', $1, 'Order reversed — cash returned'
+       FROM ops.cash_entries
+      WHERE ref_type = 'sales_order' AND ref_id = $1 AND direction = 'in'
+        AND NOT EXISTS (SELECT 1 FROM ops.cash_entries WHERE ref_type = 'sales_order_reversal' AND ref_id = $1)
+      GROUP BY account`,
+    [salesOrderId],
+  );
+}
+
+/**
+ * Reverse the finance side of a NATIVE website order (Phase 10) when it is
+ * cancelled or refunded — the mirror of realizeWebsiteOrderPayment. Resolves the
+ * order_no → sales_order id, then returns its stock and reverses its website
+ * cash-in (idempotent). The order's status column is owned by the OrderStore
+ * (setStatus), so this only touches the ledger. No-op for an order that was
+ * never realized (unpaid/expired) — nothing to reverse.
+ */
+export async function reverseWebsiteOrderFinance(orderNo: string): Promise<{ reversed: boolean }> {
+  const p = await pool();
+  const { rows } = await p.query(`SELECT id FROM ops.sales_orders WHERE order_no = $1`, [orderNo]);
+  if (!rows[0]) return { reversed: false };
+  const soId = rows[0].id as string;
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    await reverseSalesOrderLedgerTx(client, soId);
+    await client.query("COMMIT");
+    return { reversed: true };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Cancel a channel sales order and fully unwind its ledger effects in ONE
+ * transaction, so cash, inventory and P&L never keep a phantom sale. Idempotent
+ * (a second call on an already-cancelled order is a no-op). What it reverses:
+ *
+ *  • status  → 'cancelled', payment_status → 'unpaid' (no money stands).
+ *  • stock   → for every 'sale' draw-down of this order, append the mirror
+ *              positive move at the SAME unit_cost, so QoH and the finished-goods
+ *              moving-average return to exactly where they were (ledger is
+ *              append-only — we never delete the original moves).
+ *  • cash    → post a compensating 'out' for whatever cash-in this order posted
+ *              (direct/canteen/marketplace under ref_type='sales_order'; b2b under
+ *              its invoice). Guarded so it reverses at most once.
+ *  • P&L     → cancelled orders are excluded in getPnL, so revenue + COGS drop
+ *              out there too (the sales_lines stay for the record).
+ *  • b2b     → void the invoice; if it was already paid, reverse that cash too.
+ *
+ * Returns { ok:false, reason } for a missing order or one already refunded
+ * (a terminal reversal of its own); { ok:true, alreadyCancelled:true } on replay.
+ */
+export async function cancelSalesOrder(
+  orderId: string,
+): Promise<{ ok: boolean; alreadyCancelled?: boolean; reason?: string }> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    const cur = await client.query(
+      `SELECT so.status, c.name AS channel
+         FROM ops.sales_orders so
+         JOIN ops.channels c ON c.id = so.channel_id
+        WHERE so.id = $1`,
+      [orderId],
+    );
+    if (!cur.rows[0]) {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: "not_found" };
+    }
+    const status = cur.rows[0].status as string;
+    const channel = cur.rows[0].channel as string;
+    if (status === "cancelled") {
+      await client.query("ROLLBACK");
+      return { ok: true, alreadyCancelled: true };
+    }
+    if (status === "refunded") {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: "already_refunded" };
+    }
+
+    // 1. Flag the order cancelled + drop any standing payment.
+    await client.query(
+      `UPDATE ops.sales_orders SET status = 'cancelled', payment_status = 'unpaid' WHERE id = $1`,
+      [orderId],
+    );
+
+    // 2 + 3. Return stock and reverse the order's own cash-in (shared helper).
+    await reverseSalesOrderLedgerTx(client, orderId);
+
+    // 4. B2B: void the invoice, and if it was paid, reverse its receipt too.
+    if (channel === "b2b") {
+      const inv = await client.query(
+        `SELECT id, status, amount FROM ops.invoices WHERE sales_order_id = $1`,
+        [orderId],
+      );
+      if (inv.rows[0]) {
+        const invId = inv.rows[0].id as string;
+        const amount = num(inv.rows[0].amount);
+        if (inv.rows[0].status === "paid" && amount > 0) {
+          await client.query(
+            `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, note)
+             SELECT 'out', $2, 'bank', 'sales_b2b_reversal', 'invoice_reversal', $1, 'B2B invoice cancelled — cash reversed'
+              WHERE NOT EXISTS (SELECT 1 FROM ops.cash_entries WHERE ref_type = 'invoice_reversal' AND ref_id = $1)`,
+            [invId, amount],
+          );
+        }
+        await client.query(`UPDATE ops.invoices SET status = 'void' WHERE id = $1`, [invId]);
+      }
+    }
+
+    await client.query("COMMIT");
+    return { ok: true };
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
     throw e;
@@ -1733,6 +1914,7 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
            JOIN ops.channels c ON c.id = so.channel_id
            JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
           WHERE so.ordered_at >= $1::date AND so.ordered_at < ($2::date + 1)
+            AND so.status NOT IN ('cancelled', 'refunded')
           GROUP BY so.id, c.fee_pct, c.fee_flat
        ) o`,
     [startISO, endISO],

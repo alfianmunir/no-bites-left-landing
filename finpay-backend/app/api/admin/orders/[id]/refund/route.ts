@@ -4,6 +4,7 @@ import { isAdminSession } from "@/lib/adminAuth";
 import { getStore } from "@/lib/db";
 import { canTransition } from "@/lib/orders";
 import { refundOrder } from "@/lib/finpay";
+import { opsEnabled, reverseWebsiteOrderFinance } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
@@ -24,11 +25,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const result = await refundOrder(id, order.amount);
   if (!result.ok) {
-    logOrder("admin_refund_failed", { orderId: id, raw: result.raw });
-    return NextResponse.json({ error: "Finpay refund failed" }, { status: 502 });
+    logOrder("admin_refund_failed", { orderId: id, responseCode: result.responseCode, responseMessage: result.responseMessage, raw: result.raw });
+    // Surface Finpay's actual reason (e.g. "Transaction Not Found" for an order
+    // it never captured) so the admin sees WHY, not just a generic failure.
+    const detail = result.responseMessage ?? "unknown error";
+    return NextResponse.json({ error: `Finpay refund failed: ${detail}`, responseCode: result.responseCode }, { status: 502 });
   }
 
   const updated = await store.setStatus(id, "REFUNDED", "admin");
+  // Reverse the finance side (returns stock, reverses the website cash-in) so the
+  // ledger and P&L don't keep a phantom sale. Idempotent; guarded so a hiccup
+  // never fails the refund the customer already received.
+  if (opsEnabled) {
+    try {
+      await reverseWebsiteOrderFinance(id);
+    } catch (e) {
+      logOrder("admin_refund_reverse_failed", { orderId: id, error: String(e) });
+    }
+  }
   logOrder("admin_refund", { orderId: id, amount: order.amount });
   return NextResponse.json({ order: updated });
 }
