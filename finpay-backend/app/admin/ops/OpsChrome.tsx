@@ -1,6 +1,9 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { cookies } from "next/headers";
 import { getOpsSession, type OpsRole } from "@/lib/adminAuth";
+import { countActivitySince } from "@/lib/opsStore";
+import ActivityBell from "./ActivityBell";
 
 /** Shared shell + tab nav for the Ops (inventory) screens. Mobile-first: these
  *  are used standing in the kitchen, phone in hand (PRD §7). */
@@ -145,6 +148,13 @@ export async function OpsShell({
 
   const showSub = activeGroup && activeGroup.tabs.length > 1;
 
+  // Activity bell (super_admin only): unread = entries logged since last opened.
+  let unread = 0;
+  if (role === "super_admin") {
+    const seen = (await cookies()).get("ops_activity_seen")?.value ?? null;
+    unread = await countActivitySince(seen);
+  }
+
   return (
     <div className="ops2-root">
       {/* ≥900px — persistent grouped sidebar (kitchen desktop). Hidden on phones. */}
@@ -185,6 +195,7 @@ export async function OpsShell({
             <div className="font-display" style={{ fontSize: "clamp(20px,3vw,25px)", color: "var(--choco)" }}>{title}</div>
             {subtitle && <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--soft)", marginTop: 3 }}>{subtitle}</div>}
           </div>
+          {role === "super_admin" && <ActivityBell unread={unread} />}
         </header>
 
         {/* <900px — brand + title header, then the two-row chip nav (unchanged). */}
@@ -198,7 +209,10 @@ export async function OpsShell({
               </div>
             </div>
             {role === "super_admin" && (
-              <Link href="/admin" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>‹ Queue</Link>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <ActivityBell unread={unread} />
+                <Link href="/admin" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>‹ Queue</Link>
+              </div>
             )}
           </div>
 

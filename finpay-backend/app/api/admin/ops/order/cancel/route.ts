@@ -3,7 +3,7 @@
  *  { orderId }. Idempotent: cancelling an already-cancelled order is a no-op. */
 import { NextResponse } from "next/server";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, cancelSalesOrder } from "@/lib/opsStore";
+import { opsEnabled, cancelSalesOrder, logActivity } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
@@ -30,6 +30,15 @@ export async function POST(req: Request): Promise<NextResponse> {
       return NextResponse.json({ error }, { status: code });
     }
     logOrder("ops_order_cancel", { orderId, alreadyCancelled: res.alreadyCancelled ?? false });
+    if (!res.alreadyCancelled) {
+      const ref = `#${orderId.slice(0, 6)}`;
+      await logActivity({
+        kind: "order_cancel",
+        messageEn: `Order ${ref} cancelled — stock returned, cash reversed`,
+        messageId: `Pesanan ${ref} dibatalkan — stok dikembalikan, kas dibalik`,
+        tone: "#e24026",
+      });
+    }
     return NextResponse.json({ ok: true, alreadyCancelled: res.alreadyCancelled ?? false });
   } catch (e) {
     logOrder("ops_order_cancel_failed", { orderId, error: String(e) });

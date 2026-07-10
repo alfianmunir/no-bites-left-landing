@@ -2,8 +2,11 @@
  *  status to many orders at once. Body: { orderIds: string[], fulfillmentStatus?, paymentStatus? }. */
 import { NextResponse } from "next/server";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, updateOrdersState } from "@/lib/opsStore";
+import { opsEnabled, updateOrdersState, logActivity } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
+
+const STAGE_EN: Record<string, string> = { preparing: "Preparing", packed: "Packed", in_delivery: "In delivery", delivered: "Delivered" };
+const STAGE_ID: Record<string, string> = { preparing: "Disiapkan", packed: "Dikemas", in_delivery: "Diantar", delivered: "Terkirim" };
 
 export const runtime = "nodejs";
 
@@ -38,6 +41,18 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const updated = await updateOrdersState(orderIds, patch);
     logOrder("ops_order_bulk_status", { count: updated, ...patch });
+    if (updated > 0) {
+      const parts: string[] = [];
+      const partsId: string[] = [];
+      if (patch.fulfillmentStatus) { parts.push(`→ ${STAGE_EN[patch.fulfillmentStatus]}`); partsId.push(`→ ${STAGE_ID[patch.fulfillmentStatus]}`); }
+      if (patch.paymentStatus) { parts.push(patch.paymentStatus === "paid" ? "marked paid" : "marked unpaid"); partsId.push(patch.paymentStatus === "paid" ? "ditandai lunas" : "ditandai belum lunas"); }
+      await logActivity({
+        kind: "order_bulk_status",
+        messageEn: `${updated} order(s) ${parts.join(" · ")} in bulk`,
+        messageId: `${updated} pesanan ${partsId.join(" · ")} secara massal`,
+        tone: "#54300b",
+      });
+    }
     return NextResponse.json({ ok: true, updated });
   } catch (e) {
     logOrder("ops_order_bulk_status_failed", { error: String(e) });

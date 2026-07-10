@@ -10,9 +10,18 @@ import { isAdminSession } from "@/lib/adminAuth";
 import { getStore } from "@/lib/db";
 import { nextFulfillmentStatus } from "@/lib/orders";
 import { notifyCustomerReady } from "@/lib/notify";
+import { logActivity } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
+
+// Website single-axis status → friendly stage label + tone (matches the queue UI).
+const WEB_LABEL: Record<string, { en: string; id: string; tone: string }> = {
+  PAID: { en: "Preparing", id: "Disiapkan", tone: "#f58c21" },
+  BAKING: { en: "Packed", id: "Dikemas", tone: "#3b9fd6" },
+  READY_FOR_PICKUP: { en: "Ready for pickup", id: "Siap diambil", tone: "#54300b" },
+  PICKED_UP: { en: "Picked up", id: "Sudah diambil", tone: "#2d9322" },
+};
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }): Promise<NextResponse> {
   if (!(await isAdminSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -36,6 +45,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   if (next === "READY_FOR_PICKUP" && updated) {
     await notifyCustomerReady(updated);
+  }
+
+  const lbl = WEB_LABEL[next];
+  if (lbl) {
+    const emailed = next === "READY_FOR_PICKUP";
+    await logActivity({
+      kind: "website_advance",
+      messageEn: `Website ${id} → ${lbl.en}${emailed ? " · customer emailed" : ""}`,
+      messageId: `Situs ${id} → ${lbl.id}${emailed ? " · email terkirim" : ""}`,
+      tone: lbl.tone,
+    });
   }
 
   return NextResponse.json({ order: updated });

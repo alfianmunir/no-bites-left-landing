@@ -122,6 +122,27 @@ export async function notifyWholesale(w: WholesaleInput): Promise<{ sent: boolea
   return sendResult(to, `🧑‍🍳 Wholesale tasting request — ${w.cafe}`, html, "wholesale_notify", { cafe: w.cafe, contact: w.contact });
 }
 
+/**
+ * Mirror an activity-feed message to the ops team's EMAIL (called when the email
+ * notify channel is enabled). Best-effort: logs + no-ops if Resend/recipient
+ * unset, and never throws — activity logging must never break a mutation.
+ */
+export async function sendActivityEmail(message: string): Promise<{ sent: boolean; reason?: string }> {
+  if (!env.opsNotifyEmail) return { sent: false, reason: "OPS_NOTIFY_EMAIL unset" };
+  const html = `<p style="font-size:15px;color:#281a0b">${escapeHtml(message)}</p><p style="color:#6f5c45;font-size:12px">No Bites Left · ops activity</p>`;
+  return sendResult(env.opsNotifyEmail, `🔔 ${message.slice(0, 80)}`, html, "activity_notify_email", { message });
+}
+
+/**
+ * WhatsApp mirror — STUB. No provider is wired yet (PRD §8), so this logs the
+ * intent and no-ops. Enabling the whatsapp channel is therefore safe: nothing is
+ * sent until a real provider lands here.
+ */
+export async function sendActivityWhatsapp(message: string): Promise<{ sent: boolean; reason?: string }> {
+  logOrder("activity_notify_whatsapp_stub", { message, sent: false, reason: "no_provider" });
+  return { sent: false, reason: "no_provider" };
+}
+
 export async function notifyCustomerReady(order: Order): Promise<void> {
   const pickup = order.pickup_date ? formatPickupDate(order.pickup_date) : "your pickup date";
   const html = `
