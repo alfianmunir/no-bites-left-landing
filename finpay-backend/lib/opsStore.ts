@@ -1486,6 +1486,64 @@ export async function setInvoiceStatus(invoiceId: string, status: string): Promi
 }
 
 /**
+ * Reverse a sales order's cash + stock ledger effects on an OPEN transaction.
+ * Shared by channel cancel (cancelSalesOrder) and website cancel/refund
+ * (reverseWebsiteOrderFinance). Append-only + idempotent:
+ *   • stock — mirror each 'sale' draw-down with its positive twin at the same
+ *     unit_cost (QoH + moving-average return to baseline). Guarded on the twin
+ *     already existing, so a replay never double-returns stock.
+ *   • cash  — one compensating 'out' for the order's own cash-in (direct/canteen/
+ *     marketplace/website under ref_type='sales_order'), guarded on the reversal
+ *     already existing. B2B cash lives on the invoice and is handled by the caller.
+ */
+async function reverseSalesOrderLedgerTx(client: import("pg").PoolClient, salesOrderId: string): Promise<void> {
+  await client.query(
+    `INSERT INTO ops.stock_moves (product_id, qty, reason, ref_type, ref_id, unit_cost)
+     SELECT product_id, -qty, 'sale', 'sales_order', $1, unit_cost
+       FROM ops.stock_moves
+      WHERE ref_type = 'sales_order' AND ref_id = $1 AND reason = 'sale' AND qty < 0
+        AND NOT EXISTS (SELECT 1 FROM ops.stock_moves WHERE ref_type = 'sales_order' AND ref_id = $1 AND reason = 'sale' AND qty > 0)`,
+    [salesOrderId],
+  );
+  await client.query(
+    `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, note)
+     SELECT 'out', sum(amount), account, 'sales_reversal', 'sales_order_reversal', $1, 'Order reversed — cash returned'
+       FROM ops.cash_entries
+      WHERE ref_type = 'sales_order' AND ref_id = $1 AND direction = 'in'
+        AND NOT EXISTS (SELECT 1 FROM ops.cash_entries WHERE ref_type = 'sales_order_reversal' AND ref_id = $1)
+      GROUP BY account`,
+    [salesOrderId],
+  );
+}
+
+/**
+ * Reverse the finance side of a NATIVE website order (Phase 10) when it is
+ * cancelled or refunded — the mirror of realizeWebsiteOrderPayment. Resolves the
+ * order_no → sales_order id, then returns its stock and reverses its website
+ * cash-in (idempotent). The order's status column is owned by the OrderStore
+ * (setStatus), so this only touches the ledger. No-op for an order that was
+ * never realized (unpaid/expired) — nothing to reverse.
+ */
+export async function reverseWebsiteOrderFinance(orderNo: string): Promise<{ reversed: boolean }> {
+  const p = await pool();
+  const { rows } = await p.query(`SELECT id FROM ops.sales_orders WHERE order_no = $1`, [orderNo]);
+  if (!rows[0]) return { reversed: false };
+  const soId = rows[0].id as string;
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+    await reverseSalesOrderLedgerTx(client, soId);
+    await client.query("COMMIT");
+    return { reversed: true };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Cancel a channel sales order and fully unwind its ledger effects in ONE
  * transaction, so cash, inventory and P&L never keep a phantom sale. Idempotent
  * (a second call on an already-cancelled order is a no-op). What it reverses:
@@ -1540,25 +1598,8 @@ export async function cancelSalesOrder(
       [orderId],
     );
 
-    // 2. Return finished goods: mirror each 'sale' draw-down at its own cost.
-    await client.query(
-      `INSERT INTO ops.stock_moves (product_id, qty, reason, ref_type, ref_id, unit_cost)
-       SELECT product_id, -qty, 'sale', 'sales_order', $1, unit_cost
-         FROM ops.stock_moves
-        WHERE ref_type = 'sales_order' AND ref_id = $1 AND reason = 'sale' AND qty < 0`,
-      [orderId],
-    );
-
-    // 3. Reverse the order's own cash-in (direct/canteen/marketplace), once.
-    await client.query(
-      `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, note)
-       SELECT 'out', sum(amount), account, 'sales_reversal', 'sales_order_reversal', $1, 'Order cancelled — cash reversed'
-         FROM ops.cash_entries
-        WHERE ref_type = 'sales_order' AND ref_id = $1 AND direction = 'in'
-          AND NOT EXISTS (SELECT 1 FROM ops.cash_entries WHERE ref_type = 'sales_order_reversal' AND ref_id = $1)
-        GROUP BY account`,
-      [orderId],
-    );
+    // 2 + 3. Return stock and reverse the order's own cash-in (shared helper).
+    await reverseSalesOrderLedgerTx(client, orderId);
 
     // 4. B2B: void the invoice, and if it was paid, reverse its receipt too.
     if (channel === "b2b") {
@@ -1873,7 +1914,7 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
            JOIN ops.channels c ON c.id = so.channel_id
            JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
           WHERE so.ordered_at >= $1::date AND so.ordered_at < ($2::date + 1)
-            AND so.status <> 'cancelled'
+            AND so.status NOT IN ('cancelled', 'refunded')
           GROUP BY so.id, c.fee_pct, c.fee_flat
        ) o`,
     [startISO, endISO],

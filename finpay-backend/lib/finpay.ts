@@ -222,37 +222,58 @@ export async function checkStatus(orderId: string): Promise<CheckStatusResult> {
   };
 }
 
-export async function cancelOrder(orderId: string): Promise<{ ok: boolean; raw: unknown }> {
-  const url = `${env.finpay.baseUrl}/pg/payment/card/cancel/${encodeURIComponent(orderId)}`;
-  logFinpay("cancel.request", { url, orderId });
-  const res = await fetch(url, { method: "GET", headers: baseHeaders() });
-  const text = await res.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = { _unparsed: text };
-  }
-  const ok = res.ok && (parsed as Record<string, unknown>).responseCode === "2000000";
-  logFinpay("cancel.response", { orderId, httpStatus: res.status, ok });
-  return { ok, raw: parsed };
+/** Cancel/refund share the same top-level `{ responseCode, responseMessage }`
+ *  envelope as `initiate` (confirmed live against sandbox — NOT the nested
+ *  `data.result` shape that `check` uses). Success code is "2000000". */
+export interface MutationResult {
+  ok: boolean;
+  responseCode: string | null;
+  responseMessage: string | null;
+  raw: unknown;
 }
 
-export async function refundOrder(orderId: string, amount: number): Promise<{ ok: boolean; raw: unknown }> {
+export async function cancelOrder(orderId: string): Promise<MutationResult> {
+  const url = `${env.finpay.baseUrl}/pg/payment/card/cancel/${encodeURIComponent(orderId)}`;
+  logFinpay("cancel.request", { url, orderId });
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "GET", headers: baseHeaders() });
+  } catch (e) {
+    logFinpay("cancel.network_error", { orderId, error: String(e) });
+    return { ok: false, responseCode: null, responseMessage: "network_error", raw: { error: String(e) } };
+  }
+  const parsed = await parseJson(res);
+  const responseCode = (parsed.responseCode as string) ?? null;
+  const ok = res.ok && responseCode === "2000000";
+  logFinpay("cancel.response", { orderId, httpStatus: res.status, responseCode, ok });
+  return { ok, responseCode, responseMessage: (parsed.responseMessage as string) ?? null, raw: parsed };
+}
+
+export async function refundOrder(orderId: string, amount: number): Promise<MutationResult> {
   const url = `${env.finpay.baseUrl}/pg/payment/card/refund`;
   const body = { order: { id: orderId, amount: String(amount) } };
   logFinpay("refund.request", { url, orderId, amount });
-  const res = await fetch(url, { method: "POST", headers: baseHeaders(), body: JSON.stringify(body) });
-  const text = await res.text();
-  let parsed: unknown;
+  let res: Response;
   try {
-    parsed = JSON.parse(text);
-  } catch {
-    parsed = { _unparsed: text };
+    res = await fetch(url, { method: "POST", headers: baseHeaders(), body: JSON.stringify(body) });
+  } catch (e) {
+    logFinpay("refund.network_error", { orderId, error: String(e) });
+    return { ok: false, responseCode: null, responseMessage: "network_error", raw: { error: String(e) } };
   }
-  const ok = res.ok && (parsed as Record<string, unknown>).responseCode === "2000000";
-  logFinpay("refund.response", { orderId, httpStatus: res.status, ok });
-  return { ok, raw: parsed };
+  const parsed = await parseJson(res);
+  const responseCode = (parsed.responseCode as string) ?? null;
+  const ok = res.ok && responseCode === "2000000";
+  logFinpay("refund.response", { orderId, httpStatus: res.status, responseCode, responseMessage: parsed.responseMessage ?? null, ok });
+  return { ok, responseCode, responseMessage: (parsed.responseMessage as string) ?? null, raw: parsed };
+}
+
+async function parseJson(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return { _unparsed: text };
+  }
 }
 
 // ---------------------------------------------------------------------------
