@@ -289,12 +289,104 @@ function ExpenseEntry({ categories }: { categories: ExpenseCategoryRow[] }) {
 }
 
 // ============================================================ Budgets
-function Budgets({ budgets, monthLabel }: { budgets: BudgetRow[]; monthLabel: string }) {
+const BUDGET_TYPES = [
+  { value: "opex", label: "Opex" },
+  { value: "marketing", label: "Marketing" },
+  { value: "capex", label: "Capex" },
+];
+
+async function postBudget(body: unknown): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch("/api/admin/ops/budget", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const d = await res.json().catch(() => ({}));
+  return { ok: res.ok, error: d.error };
+}
+
+function CategoryRowEdit({ cat }: { cat: ExpenseCategoryRow }) {
+  const router = useRouter();
+  const [name, setName] = useState(cat.name);
+  const [budget, setBudget] = useState(cat.monthlyBudget == null ? "" : String(cat.monthlyBudget));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dirty = name.trim() !== cat.name || (budget === "" ? null : Number(budget)) !== cat.monthlyBudget;
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    const { ok, error } = await postBudget({ action: "update", id: cat.id, name: name.trim(), monthlyBudget: budget === "" ? null : Number(budget) });
+    setBusy(false);
+    if (!ok) { setError(error ?? "failed"); return; }
+    router.refresh();
+  };
+  const del = async () => {
+    if (!confirm(`Delete category "${cat.name}"?`)) return;
+    setBusy(true);
+    setError(null);
+    const { ok, error } = await postBudget({ action: "delete", id: cat.id });
+    setBusy(false);
+    if (!ok) { setError(error ?? "failed"); return; }
+    router.refresh();
+  };
+
+  return (
+    <div style={{ padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 11.5, fontWeight: 800, color: "var(--soft)", width: 90 }}>{cat.code}</span>
+        <span style={{ fontSize: 10.5, fontWeight: 800, color: "#fff", background: cat.type === "marketing" ? "var(--orange)" : cat.type === "capex" ? "var(--choco)" : "var(--soft)", borderRadius: 999, padding: "2px 8px" }}>{cat.type}</span>
+        <input style={{ ...inputStyle, flex: 1, minWidth: 120 }} value={name} onChange={(e) => setName(e.target.value)} aria-label="category name" />
+        <input type="number" inputMode="numeric" min="0" style={{ ...inputStyle, width: 120 }} value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="no budget" aria-label="monthly budget" />
+        {dirty && <button onClick={save} disabled={busy} style={{ padding: "7px 12px", borderRadius: 8, border: "none", background: "var(--green)", color: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Save</button>}
+        <button onClick={del} disabled={busy} aria-label="delete category" style={{ border: "none", background: "transparent", color: "var(--red)", fontSize: 15, cursor: "pointer" }}>🗑</button>
+      </div>
+      {error && <div style={{ fontSize: 12, color: "var(--red)", fontWeight: 700, marginTop: 4 }}>{error}</div>}
+    </div>
+  );
+}
+
+function AddCategory() {
+  const router = useRouter();
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [type, setType] = useState("opex");
+  const [budget, setBudget] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const add = async () => {
+    setBusy(true);
+    setError(null);
+    const { ok, error } = await postBudget({ action: "create", code: code.trim(), name: name.trim(), type, monthlyBudget: budget === "" ? null : Number(budget) });
+    setBusy(false);
+    if (!ok) { setError(error ?? "failed"); return; }
+    setCode(""); setName(""); setBudget("");
+    router.refresh();
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <input style={{ ...inputStyle, width: 130 }} value={code} onChange={(e) => setCode(e.target.value.toLowerCase())} placeholder="code (mkt_ads)" />
+        <select style={{ ...inputStyle, width: "auto" }} value={type} onChange={(e) => setType(e.target.value)}>
+          {BUDGET_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+        <input style={{ ...inputStyle, flex: 1, minWidth: 120 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="name" />
+        <input type="number" inputMode="numeric" min="0" style={{ ...inputStyle, width: 120 }} value={budget} onChange={(e) => setBudget(e.target.value)} placeholder="budget (opt.)" />
+        <button onClick={add} disabled={busy || !code.trim() || !name.trim()} style={{ padding: "8px 14px", borderRadius: 8, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>+ Add</button>
+      </div>
+      {error && <div style={{ fontSize: 12, color: "var(--red)", fontWeight: 700 }}>{error}</div>}
+    </div>
+  );
+}
+
+function Budgets({ budgets, categories, monthLabel }: { budgets: BudgetRow[]; categories: ExpenseCategoryRow[]; monthLabel: string }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={sectionLabel}>MARKETING BUDGET vs SPEND · {monthLabel.toUpperCase()}</div>
+      <div style={sectionLabel}>BUDGET vs SPEND · {monthLabel.toUpperCase()}</div>
       {budgets.length === 0 ? (
-        <div style={{ ...card, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No budgeted marketing tags.</div>
+        <div style={{ ...card, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No budgeted categories yet — set a monthly budget below.</div>
       ) : (
         budgets.map((b) => {
           const pct = b.monthlyBudget > 0 ? b.spent / b.monthlyBudget : 0;
@@ -316,6 +408,15 @@ function Budgets({ budgets, monthLabel }: { budgets: BudgetRow[]; monthLabel: st
           );
         })
       )}
+
+      <div style={{ ...sectionLabel, marginTop: 8 }}>MANAGE CATEGORIES &amp; BUDGETS · {categories.length}</div>
+      <div style={card}>
+        {categories.map((c) => <CategoryRowEdit key={c.id} cat={c} />)}
+        <AddCategory />
+        <div style={{ fontSize: 11.5, color: "var(--soft)", marginTop: 10 }}>
+          Leave budget empty for no monthly cap. Categories with recorded expenses can&apos;t be deleted (ledger history) — clear the budget instead.
+        </div>
+      </div>
     </div>
   );
 }
@@ -668,7 +769,7 @@ export default function MoneyPanel({
       {tab === "overview" && <Overview position={position} pnl={pnl} monthLabel={monthLabel} />}
       {tab === "ledger" && <Ledger entries={entries} monthLabel={monthLabel} />}
       {tab === "expense" && <ExpenseEntry categories={categories} />}
-      {tab === "budgets" && <Budgets budgets={budgets} monthLabel={monthLabel} />}
+      {tab === "budgets" && <Budgets budgets={budgets} categories={categories} monthLabel={monthLabel} />}
       {tab === "assets" && <Assets assets={assets} />}
       {tab === "payables" && <Payables payables={payables} invoices={invoices} today={today} />}
     </div>

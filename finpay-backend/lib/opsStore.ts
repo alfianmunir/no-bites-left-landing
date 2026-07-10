@@ -1595,7 +1595,7 @@ export async function listExpenseCategories(): Promise<ExpenseCategoryRow[]> {
   }));
 }
 
-/** Marketing tags with month-to-date spend vs monthly budget (PRD §M4b). */
+/** Budgeted categories (any type) with month-to-date spend vs monthly budget. */
 export async function listBudgetVsSpend(month: string): Promise<BudgetRow[]> {
   const p = await pool();
   const { rows } = await p.query(
@@ -1606,7 +1606,7 @@ export async function listBudgetVsSpend(month: string): Promise<BudgetRow[]> {
          ON e.category_id = ec.id
         AND e.occurred_at >= $1::date
         AND e.occurred_at < ($1::date + interval '1 month')
-      WHERE ec.type = 'marketing' AND ec.monthly_budget IS NOT NULL
+      WHERE ec.monthly_budget IS NOT NULL
       GROUP BY ec.code, ec.name, ec.monthly_budget
       ORDER BY ec.code`,
     [month + "-01"],
@@ -1617,6 +1617,50 @@ export async function listBudgetVsSpend(month: string): Promise<BudgetRow[]> {
     monthlyBudget: num(r.monthly_budget),
     spent: num(r.spent),
   }));
+}
+
+/** Create an expense category (with an optional monthly budget). */
+export async function createExpenseCategory(input: {
+  code: string;
+  name: string;
+  type: "opex" | "marketing" | "capex";
+  monthlyBudget: number | null;
+}): Promise<string> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `INSERT INTO ops.expense_categories (code, name, type, monthly_budget)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [input.code.trim(), input.name.trim(), input.type, input.monthlyBudget],
+  );
+  return rows[0].id as string;
+}
+
+/** Rename a category and/or set/clear its monthly budget. */
+export async function updateExpenseCategory(
+  id: string,
+  patch: { name?: string; monthlyBudget?: number | null },
+): Promise<void> {
+  const p = await pool();
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  let i = 1;
+  if (patch.name !== undefined) { sets.push(`name = $${i++}`); vals.push(patch.name.trim()); }
+  if (patch.monthlyBudget !== undefined) { sets.push(`monthly_budget = $${i++}`); vals.push(patch.monthlyBudget); }
+  if (sets.length === 0) return;
+  vals.push(id);
+  await p.query(`UPDATE ops.expense_categories SET ${sets.join(", ")} WHERE id = $${i}`, vals);
+}
+
+/**
+ * Delete a category. Blocked when expenses reference it — those are booked
+ * ledger history; clear the budget or stop using the category instead.
+ */
+export async function deleteExpenseCategory(id: string): Promise<"deleted" | "blocked"> {
+  const p = await pool();
+  const used = await p.query(`SELECT 1 FROM ops.expenses WHERE category_id = $1 LIMIT 1`, [id]);
+  if (used.rows[0]) return "blocked";
+  await p.query(`DELETE FROM ops.expense_categories WHERE id = $1`, [id]);
+  return "deleted";
 }
 
 export async function listAssets(): Promise<AssetRow[]> {

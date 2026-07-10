@@ -86,16 +86,27 @@ export interface MenuStore {
   init(): Promise<void>;
   list(): Promise<MenuItem[]>;
   get(sku: string): Promise<MenuItem | null>;
+  /** Create or fully replace one menu item (admin CRUD). Keyed on sku. */
+  upsert(item: MenuItem): Promise<void>;
+  remove(sku: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------- In-code store (no DB)
+// Writes are in-memory only (dev preview) — they don't survive a restart.
 class SeedMenuStore implements MenuStore {
+  private items: MenuItem[] = [...CATALOG];
   async init(): Promise<void> {}
   async list(): Promise<MenuItem[]> {
-    return [...CATALOG].sort((a, b) => a.sortOrder - b.sortOrder || a.sku.localeCompare(b.sku));
+    return [...this.items].sort((a, b) => a.sortOrder - b.sortOrder || a.sku.localeCompare(b.sku));
   }
   async get(sku: string): Promise<MenuItem | null> {
-    return CATALOG.find((m) => m.sku === sku) ?? null;
+    return this.items.find((m) => m.sku === sku) ?? null;
+  }
+  async upsert(item: MenuItem): Promise<void> {
+    this.items = [...this.items.filter((m) => m.sku !== item.sku), item];
+  }
+  async remove(sku: string): Promise<void> {
+    this.items = this.items.filter((m) => m.sku !== sku);
   }
 }
 
@@ -155,6 +166,24 @@ class PostgresMenuStore implements MenuStore {
     const pool = await this.pool();
     const { rows } = await pool.query("SELECT * FROM menu_items WHERE sku = $1", [sku]);
     return rows[0] ? this.row(rows[0]) : null;
+  }
+  async upsert(m: MenuItem): Promise<void> {
+    const pool = await this.pool();
+    await pool.query(
+      `INSERT INTO menu_items (sku, family, name, variant, unit_price, image, accent, tag, tag_id, note, note_id, description, description_id, available, sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       ON CONFLICT (sku) DO UPDATE SET
+         family = EXCLUDED.family, name = EXCLUDED.name, variant = EXCLUDED.variant,
+         unit_price = EXCLUDED.unit_price, image = EXCLUDED.image, accent = EXCLUDED.accent,
+         tag = EXCLUDED.tag, tag_id = EXCLUDED.tag_id, note = EXCLUDED.note, note_id = EXCLUDED.note_id,
+         description = EXCLUDED.description, description_id = EXCLUDED.description_id,
+         available = EXCLUDED.available, sort_order = EXCLUDED.sort_order`,
+      [m.sku, m.family, m.name, m.variant, m.unitPrice, m.image, m.accent, m.tag, m.tagId, m.note, m.noteId, m.description, m.descriptionId, m.available, m.sortOrder],
+    );
+  }
+  async remove(sku: string): Promise<void> {
+    const pool = await this.pool();
+    await pool.query("DELETE FROM menu_items WHERE sku = $1", [sku]);
   }
 }
 

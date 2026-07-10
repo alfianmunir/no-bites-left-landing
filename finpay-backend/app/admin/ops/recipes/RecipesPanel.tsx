@@ -75,8 +75,11 @@ function AddLine({ recipeId, items }: { recipeId: string; items: ItemDetailRow[]
 }
 
 // ---------------------------------------------------------------- Recipe card
+// Collapsed by default — the header row shows a summary (yield · line counts);
+// clicking it expands into the full editor (yield, BOM lines, add-line forms).
 function RecipeCard({ pr, items }: { pr: ProductRecipeRow; items: ItemDetailRow[] }) {
   const router = useRouter();
+  const [open, setOpen] = useState(false);
   const [yieldQty, setYieldQty] = useState(pr.batchYieldQty == null ? "" : String(pr.batchYieldQty));
   const [busy, setBusy] = useState(false);
   const goods = items.filter((i) => i.type === "ingredient");
@@ -106,37 +109,53 @@ function RecipeCard({ pr, items }: { pr: ProductRecipeRow; items: ItemDetailRow[
     router.refresh();
   };
 
+  const summary = pr.recipeId
+    ? `yields ${pr.batchYieldQty ?? "—"} · ${ingredientLines.length} ingredient${ingredientLines.length === 1 ? "" : "s"} · ${packagingLines.length} packaging`
+    : "no recipe yet";
+
   return (
     <div style={{ ...card }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-        <div style={{ fontWeight: 900, fontSize: 15 }}>{pr.name} <span style={{ color: "var(--soft)", fontWeight: 600, fontSize: 12.5 }}>{pr.sku}</span></div>
-        {pr.recipeId ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 12, color: "var(--soft)", fontWeight: 700 }}>yields</span>
-            <input type="number" min="0" style={{ ...inputStyle, width: 70 }} value={yieldQty} onChange={(e) => setYieldQty(e.target.value)} />
-            {yieldDirty && <button onClick={saveYield} disabled={busy} style={{ padding: "6px 10px", borderRadius: 8, border: "none", background: "var(--green)", color: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Save</button>}
-            <button onClick={removeRecipe} disabled={busy} style={{ padding: "6px 10px", borderRadius: 999, border: "1.5px solid var(--line)", background: "#fff", color: "var(--red)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Remove</button>
-          </div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <input type="number" min="0" style={{ ...inputStyle, width: 80 }} value={yieldQty} onChange={(e) => setYieldQty(e.target.value)} placeholder="yield" />
-            <button onClick={createRecipe} disabled={busy || !yieldQty} style={{ padding: "6px 12px", borderRadius: 8, border: "none", background: "var(--choco)", color: "#fff", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>Create recipe</button>
-          </div>
-        )}
+      {/* Collapsed header — click to expand/collapse */}
+      <div onClick={() => setOpen(!open)} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 140 }}>
+          <span style={{ fontWeight: 900, fontSize: 15 }}>{pr.name}</span>{" "}
+          <span style={{ color: "var(--soft)", fontWeight: 600, fontSize: 12.5 }}>{pr.sku}</span>
+        </div>
+        <span style={{ fontSize: 12, color: pr.recipeId ? "var(--soft)" : "var(--orange)", fontWeight: 700 }}>{summary}</span>
+        <span style={{ color: "var(--soft)", fontSize: 12, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
       </div>
 
-      {pr.recipeId && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.04em", marginBottom: 4 }}>INGREDIENTS · {ingredientLines.length}</div>
-            {ingredientLines.map((l) => <Line key={l.id} line={l} />)}
-            <AddLine recipeId={pr.recipeId} items={goods} />
-          </div>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.04em", marginBottom: 4 }}>PACKAGING · {packagingLines.length}</div>
-            {packagingLines.map((l) => <Line key={l.id} line={l} />)}
-            <AddLine recipeId={pr.recipeId} items={packaging} />
-          </div>
+      {open && (
+        <div style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 14 }}>
+          {pr.recipeId ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "var(--soft)", fontWeight: 700 }}>yields</span>
+              <input type="number" min="0" style={{ ...inputStyle, width: 70 }} value={yieldQty} onChange={(e) => setYieldQty(e.target.value)} />
+              {yieldDirty && <button onClick={saveYield} disabled={busy} style={{ padding: "6px 10px", borderRadius: 8, border: "none", background: "var(--green)", color: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Save</button>}
+              <span style={{ flex: 1 }} />
+              <button onClick={removeRecipe} disabled={busy} style={{ padding: "6px 10px", borderRadius: 999, border: "1.5px solid var(--line)", background: "#fff", color: "var(--red)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Remove</button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="number" min="0" style={{ ...inputStyle, width: 80 }} value={yieldQty} onChange={(e) => setYieldQty(e.target.value)} placeholder="yield" />
+              <button onClick={createRecipe} disabled={busy || !yieldQty} style={{ padding: "6px 12px", borderRadius: 8, border: "none", background: "var(--choco)", color: "#fff", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>Create recipe</button>
+            </div>
+          )}
+
+          {pr.recipeId && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.04em", marginBottom: 4 }}>INGREDIENTS · {ingredientLines.length}</div>
+                {ingredientLines.map((l) => <Line key={l.id} line={l} />)}
+                <AddLine recipeId={pr.recipeId} items={goods} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.04em", marginBottom: 4 }}>PACKAGING · {packagingLines.length}</div>
+                {packagingLines.map((l) => <Line key={l.id} line={l} />)}
+                <AddLine recipeId={pr.recipeId} items={packaging} />
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
