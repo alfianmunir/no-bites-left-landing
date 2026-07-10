@@ -1381,6 +1381,43 @@ export async function listSalesOrders(limit = 50): Promise<SalesOrderRow[]> {
   }));
 }
 
+export interface WebsiteOrderEconomics {
+  gross: number;
+  cogs: number;
+  feePct: number;
+  feeFlat: number;
+}
+
+/**
+ * Realized economics for website orders, keyed by storefront order_no. Website
+ * order items carry the MENU sku (not the ops product sku), so cost can't be
+ * looked up by sku on the client — the true COGS is the made-cost snapshot on
+ * each sales_line (posted by realizeWebsiteOrderPayment). This reads it straight
+ * from the ledger so the Orders list shows a real margin, not gross-only.
+ * Orders with no sales_lines yet (unpaid / unmapped SKUs) simply aren't returned.
+ */
+export async function listWebsiteOrderEconomics(orderNos: string[]): Promise<Record<string, WebsiteOrderEconomics>> {
+  if (orderNos.length === 0) return {};
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT so.order_no,
+            c.fee_pct, c.fee_flat,
+            COALESCE(sum(sl.unit_price * sl.qty), 0) AS gross,
+            COALESCE(sum(sl.unit_cogs * sl.qty), 0) AS cogs
+       FROM ops.sales_orders so
+       JOIN ops.channels c ON c.id = so.channel_id
+       JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
+      WHERE so.order_no = ANY($1::text[])
+      GROUP BY so.order_no, c.fee_pct, c.fee_flat`,
+    [orderNos],
+  );
+  const out: Record<string, WebsiteOrderEconomics> = {};
+  for (const r of rows) {
+    out[r.order_no as string] = { gross: num(r.gross), cogs: num(r.cogs), feePct: num(r.fee_pct), feeFlat: num(r.fee_flat) };
+  }
+  return out;
+}
+
 async function loadOrderItems(orderIds: string[]): Promise<Map<string, SalesOrderItem[]>> {
   const map = new Map<string, SalesOrderItem[]>();
   if (orderIds.length === 0) return map;
