@@ -250,6 +250,9 @@ export default function AllOrdersList({
 
   const outstanding = invoices.filter((i) => i.status !== "paid" && i.status !== "void");
   const outstandingTotal = outstanding.reduce((s, i) => s + i.amount, 0);
+  // Void invoices belong to cancelled orders — not receivable, so drop them from
+  // the AR list (paid ones stay as history).
+  const arInvoices = invoices.filter((i) => i.status !== "void");
 
   const typeChips: [typeof fType, string][] = [["all", "All"], ["website", "Website"], ["channel", "Channel"]];
   const payChips: [typeof fPaid, string][] = [["all", "All"], ["paid", "Paid"], ["unpaid", "Unpaid"]];
@@ -334,12 +337,12 @@ export default function AllOrdersList({
         </div>
       )}
 
-      {/* B2B invoices (AR) */}
-      {invoices.length > 0 && (
+      {/* B2B invoices (AR) — void (cancelled-order) invoices excluded */}
+      {arInvoices.length > 0 && (
         <div>
           <div style={sectionLabel}>B2B INVOICES (AR) · {outstanding.length} open · {rupiah(outstandingTotal)}</div>
           <div style={{ ...card, padding: 0, overflow: "hidden" }}>
-            {invoices.map((inv) => (
+            {arInvoices.map((inv) => (
               <InvoiceItem key={inv.id} inv={inv} today={today} busy={busy} onMarkPaid={markInvoicePaid} />
             ))}
           </div>
@@ -513,6 +516,13 @@ function RowCard({
 // -------------------------------------------------------------- Invoice row
 function InvoiceItem({ inv, today, busy, onMarkPaid }: { inv: InvoiceRow; today: string; busy: boolean; onMarkPaid: (id: string) => void }) {
   const bucket = agingBucket(inv.status, inv.dueDate, today);
+  // Status-first labels: agingBucket maps BOTH paid and void → "paid", so key off
+  // inv.status directly (a bare `${bucket}d overdue` would print "paidd overdue"
+  // for a void invoice). Only genuinely-open invoices can be marked paid.
+  const isPaid = inv.status === "paid";
+  const isVoid = inv.status === "void";
+  const label = isPaid ? "paid" : isVoid ? "void" : bucket === "current" ? "current" : `${bucket}d overdue`;
+  const labelColor = isVoid ? "var(--soft)" : BUCKET_COLOR[bucket];
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
       <div style={{ fontSize: 13 }}>
@@ -521,10 +531,8 @@ function InvoiceItem({ inv, today, busy, onMarkPaid }: { inv: InvoiceRow; today:
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontWeight: 800, fontSize: 13.5 }}>{rupiah(inv.amount)}</span>
-        <span style={{ fontSize: 11.5, fontWeight: 800, color: BUCKET_COLOR[bucket] }}>
-          {inv.status === "paid" ? "paid" : bucket === "current" ? "current" : `${bucket}d overdue`}
-        </span>
-        {inv.status !== "paid" && (
+        <span style={{ fontSize: 11.5, fontWeight: 800, color: labelColor }}>{label}</span>
+        {!isPaid && !isVoid && (
           <button onClick={() => onMarkPaid(inv.id)} disabled={busy} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--green)", background: "#fff", color: "var(--green)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Mark paid</button>
         )}
       </div>
