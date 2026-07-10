@@ -301,6 +301,46 @@ export async function listStockBalance(): Promise<StockBalanceRow[]> {
   });
 }
 
+export interface FinishedGoodsBalanceRow {
+  productId: string;
+  name: string;
+  qtyOnHand: number;
+  avgCost: number; // moving-average made-cost of the stock on hand
+  stockValue: number;
+}
+
+/**
+ * Finished-goods (products) on-hand balance, straight from the product side of
+ * the stock ledger: production_output adds at the batch's cost/unit, sales +
+ * finished-goods waste draw down. Value is the residual (in − out) so it stays
+ * tied to what was actually produced. Only products with stock on hand are
+ * returned. Complements v_stock_balance, which covers items (ingredients) only.
+ */
+export async function listFinishedGoodsBalance(): Promise<FinishedGoodsBalanceRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pr.id, pr.name,
+            sum(sm.qty) AS qty_on_hand,
+            sum(sm.qty * sm.unit_cost) AS stock_value
+       FROM ops.products pr
+       JOIN ops.stock_moves sm ON sm.product_id = pr.id
+      GROUP BY pr.id, pr.name
+     HAVING sum(sm.qty) > 0.0001
+      ORDER BY pr.name ASC`,
+  );
+  return rows.map((r) => {
+    const qtyOnHand = num(r.qty_on_hand);
+    const stockValue = num(r.stock_value);
+    return {
+      productId: r.id as string,
+      name: r.name as string,
+      qtyOnHand,
+      avgCost: qtyOnHand > 0 ? stockValue / qtyOnHand : 0,
+      stockValue,
+    };
+  });
+}
+
 export async function listReorderAlerts(): Promise<ReorderAlertRow[]> {
   const p = await pool();
   const { rows } = await p.query(
@@ -669,6 +709,107 @@ export async function getOpnameSince(): Promise<string | null> {
   const p = await pool();
   const { rows } = await p.query(`SELECT (value #>> '{}') AS since FROM ops.config WHERE key = 'opname_since'`);
   return rows[0]?.since ? new Date(rows[0].since as string).toISOString().slice(0, 10) : null;
+}
+
+// --- Stock movement ledger ---------------------------------------------------
+
+export type StockLedgerKind = "item" | "product";
+
+export interface StockLedgerRow {
+  id: string;
+  at: string;
+  kind: StockLedgerKind; // item = ingredient/packaging, product = finished goods
+  name: string;
+  unit: string | null;
+  qty: number; // signed: + in, − out
+  unitCost: number;
+  value: number; // qty * unitCost (signed)
+  reason: string; // raw stock_moves.reason
+  refType: string | null;
+  refLabel: string | null; // supplier / order no / batch product, resolved for context
+  note: string | null;
+}
+
+export interface StockLedgerFilter {
+  kind?: StockLedgerKind | null;
+  reason?: string | null;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * The append-only stock ledger — every movement across ingredients/packaging
+ * (items) AND finished goods (products), newest first. Each row is enriched with
+ * a friendly ref label (supplier for a receipt, order no/channel for a sale,
+ * product for a production move) so it reads on its own. Powers the Ledger screen.
+ */
+export async function listStockLedger(f: StockLedgerFilter = {}): Promise<StockLedgerRow[]> {
+  const p = await pool();
+  const limit = Math.min(Math.max(f.limit ?? 100, 1), 500);
+  const offset = Math.max(f.offset ?? 0, 0);
+  const { rows } = await p.query(
+    `SELECT sm.id, sm.created_at, sm.qty, COALESCE(sm.unit_cost, 0) AS unit_cost,
+            sm.reason, sm.ref_type, sm.note,
+            i.name AS item_name, i.unit AS item_unit,
+            pr.name AS product_name,
+            so.order_no AS so_order_no, ch.name AS so_channel,
+            blpr.name AS batch_product, sup.name AS supplier_name
+       FROM ops.stock_moves sm
+       LEFT JOIN ops.items i          ON i.id  = sm.item_id
+       LEFT JOIN ops.products pr      ON pr.id = sm.product_id
+       LEFT JOIN ops.sales_orders so  ON sm.ref_type = 'sales_order' AND so.id = sm.ref_id
+       LEFT JOIN ops.channels ch      ON ch.id = so.channel_id
+       LEFT JOIN ops.batch_lines bl   ON sm.ref_type = 'batch_line' AND bl.id = sm.ref_id
+       LEFT JOIN ops.products blpr    ON blpr.id = bl.product_id
+       LEFT JOIN ops.purchases pu     ON sm.ref_type = 'purchase' AND pu.id = sm.ref_id
+       LEFT JOIN ops.suppliers sup    ON sup.id = pu.supplier_id
+      WHERE ($1::text IS NULL OR (CASE WHEN sm.item_id IS NOT NULL THEN 'item' ELSE 'product' END) = $1)
+        AND ($2::text IS NULL OR sm.reason = $2)
+      ORDER BY sm.created_at DESC, sm.id DESC
+      LIMIT $3 OFFSET $4`,
+    [f.kind ?? null, f.reason ?? null, limit, offset],
+  );
+  return rows.map((r) => {
+    const qty = num(r.qty);
+    const unitCost = num(r.unit_cost);
+    const kind: StockLedgerKind = r.item_name != null ? "item" : "product";
+    const name = (r.item_name ?? r.product_name ?? "—") as string;
+    const rawRef =
+      (r.so_order_no as string) ||
+      (r.so_channel as string) ||
+      (r.batch_product as string) ||
+      (r.supplier_name as string) ||
+      null;
+    // For a finished-goods output the batch product is just the row name — drop
+    // the redundant ref so the column carries signal, not an echo.
+    const refLabel = rawRef && rawRef !== name ? rawRef : null;
+    return {
+      id: String(r.id),
+      at: new Date(r.created_at as string).toISOString(),
+      kind,
+      name,
+      unit: (r.item_unit as string) ?? null,
+      qty,
+      unitCost,
+      value: qty * unitCost,
+      reason: r.reason as string,
+      refType: (r.ref_type as string) ?? null,
+      refLabel,
+      note: (r.note as string) ?? null,
+    };
+  });
+}
+
+/** Total movement count for the ledger's pagination. Same filters as listStockLedger. */
+export async function countStockLedger(f: StockLedgerFilter = {}): Promise<number> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT count(*) AS n FROM ops.stock_moves sm
+      WHERE ($1::text IS NULL OR (CASE WHEN sm.item_id IS NOT NULL THEN 'item' ELSE 'product' END) = $1)
+        AND ($2::text IS NULL OR sm.reason = $2)`,
+    [f.kind ?? null, f.reason ?? null],
+  );
+  return num(rows[0]?.n);
 }
 
 /** Ingredient/packaging waste (post_waste, drains lots FEFO at avg cost). Returns cost of wasted stock. */

@@ -35,6 +35,7 @@ const GROUPS: Group[] = [
     icon: "📦",
     tabs: [
       { href: "/admin/ops/stock", label: "Stock" },
+      { href: "/admin/ops/stock/ledger", label: "Ledger" },
       { href: "/admin/ops/items", label: "Items" },
       { href: "/admin/ops/receive", label: "Receive" },
       { href: "/admin/ops/opname", label: "Opname" },
