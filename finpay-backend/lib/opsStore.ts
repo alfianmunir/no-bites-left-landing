@@ -301,6 +301,46 @@ export async function listStockBalance(): Promise<StockBalanceRow[]> {
   });
 }
 
+export interface FinishedGoodsBalanceRow {
+  productId: string;
+  name: string;
+  qtyOnHand: number;
+  avgCost: number; // moving-average made-cost of the stock on hand
+  stockValue: number;
+}
+
+/**
+ * Finished-goods (products) on-hand balance, straight from the product side of
+ * the stock ledger: production_output adds at the batch's cost/unit, sales +
+ * finished-goods waste draw down. Value is the residual (in − out) so it stays
+ * tied to what was actually produced. Only products with stock on hand are
+ * returned. Complements v_stock_balance, which covers items (ingredients) only.
+ */
+export async function listFinishedGoodsBalance(): Promise<FinishedGoodsBalanceRow[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pr.id, pr.name,
+            sum(sm.qty) AS qty_on_hand,
+            sum(sm.qty * sm.unit_cost) AS stock_value
+       FROM ops.products pr
+       JOIN ops.stock_moves sm ON sm.product_id = pr.id
+      GROUP BY pr.id, pr.name
+     HAVING sum(sm.qty) > 0.0001
+      ORDER BY pr.name ASC`,
+  );
+  return rows.map((r) => {
+    const qtyOnHand = num(r.qty_on_hand);
+    const stockValue = num(r.stock_value);
+    return {
+      productId: r.id as string,
+      name: r.name as string,
+      qtyOnHand,
+      avgCost: qtyOnHand > 0 ? stockValue / qtyOnHand : 0,
+      stockValue,
+    };
+  });
+}
+
 export async function listReorderAlerts(): Promise<ReorderAlertRow[]> {
   const p = await pool();
   const { rows } = await p.query(

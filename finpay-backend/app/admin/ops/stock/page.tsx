@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getOpsSession } from "@/lib/adminAuth";
-import { opsEnabled, listStockBalance, listReorderAlerts, listExpiringLots } from "@/lib/opsStore";
+import { opsEnabled, listStockBalance, listReorderAlerts, listExpiringLots, listFinishedGoodsBalance } from "@/lib/opsStore";
 import { OpsShell, DbNotice, rupiah, qty } from "../OpsChrome";
 
 export const runtime = "nodejs";
@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 
 const th: React.CSSProperties = { textAlign: "left", padding: "9px 12px", fontSize: 11, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--soft)", borderBottom: "1.5px solid var(--line)", whiteSpace: "nowrap" };
 const td: React.CSSProperties = { padding: "10px 12px", fontSize: 13.5, color: "var(--ink)", borderBottom: "1px solid var(--line)", whiteSpace: "nowrap" };
+const sectionLabel: React.CSSProperties = { fontSize: 12.5, fontWeight: 900, letterSpacing: "0.02em", color: "var(--choco)", marginBottom: 8 };
 
 export default async function OpsStockPage() {
   const session = await getOpsSession();
@@ -23,9 +24,10 @@ export default async function OpsStockPage() {
     );
   }
 
-  const [balance, alerts, expiring] = await Promise.all([listStockBalance(), listReorderAlerts(), listExpiringLots()]);
+  const [balance, alerts, expiring, finishedGoods] = await Promise.all([listStockBalance(), listReorderAlerts(), listExpiringLots(), listFinishedGoodsBalance()]);
   const totalValue = balance.reduce((s, r) => s + r.stockValue, 0);
-  const subtitle = staff ? `${balance.length} items on hand` : `${balance.length} items · ${rupiah(totalValue)} on hand`;
+  const fgValue = finishedGoods.reduce((s, r) => s + r.stockValue, 0);
+  const subtitle = staff ? `${balance.length} items on hand` : `${balance.length} items · ${rupiah(totalValue)} ingredients · ${rupiah(fgValue)} finished goods`;
 
   return (
     <OpsShell active="/admin/ops/stock" title="Stock" subtitle={subtitle}>
@@ -58,6 +60,7 @@ export default async function OpsStockPage() {
         </div>
       )}
 
+      <div style={sectionLabel}>🧺 Ingredients &amp; packaging</div>
       {balance.length === 0 ? (
         <div style={{ padding: 40, textAlign: "center", color: "var(--soft)", fontSize: 14 }}>No stock on hand yet — receive a purchase to get started.</div>
       ) : (
@@ -79,6 +82,40 @@ export default async function OpsStockPage() {
                     {r.belowReorder && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 900, color: "var(--red)" }}>LOW</span>}
                   </td>
                   <td style={{ ...td, textAlign: "right" }}>{qty(r.qtyOnHand)} <span style={{ color: "var(--soft)", fontSize: 12 }}>{r.unit}</span></td>
+                  {!staff && <td style={{ ...td, textAlign: "right", color: "var(--soft)" }}>{rupiah(r.avgCost)}</td>}
+                  {!staff && <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{rupiah(r.stockValue)}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Finished goods — the product side of the stock ledger (production_output
+          in, sales/waste out). Value is what it was made at, so it ties to
+          production. */}
+      <div style={{ ...sectionLabel, marginTop: 24, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>🥐 Finished goods</span>
+        {!staff && finishedGoods.length > 0 && <span style={{ fontSize: 12, fontWeight: 800, color: "var(--soft)" }}>{rupiah(fgValue)}</span>}
+      </div>
+      {finishedGoods.length === 0 ? (
+        <div style={{ padding: 40, textAlign: "center", color: "var(--soft)", fontSize: 14 }}>No finished goods on hand — close a production batch to stock up.</div>
+      ) : (
+        <div style={{ overflowX: "auto", background: "#fff", border: "1.5px solid var(--line)", borderRadius: 14 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: staff ? 280 : 480 }}>
+            <thead>
+              <tr>
+                <th style={th}>Product</th>
+                <th style={{ ...th, textAlign: "right" }}>On hand</th>
+                {!staff && <th style={{ ...th, textAlign: "right" }}>Made cost</th>}
+                {!staff && <th style={{ ...th, textAlign: "right" }}>Value</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {finishedGoods.map((r) => (
+                <tr key={r.productId}>
+                  <td style={{ ...td, whiteSpace: "normal", fontWeight: 700 }}>{r.name}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{qty(r.qtyOnHand)} <span style={{ color: "var(--soft)", fontSize: 12 }}>pcs</span></td>
                   {!staff && <td style={{ ...td, textAlign: "right", color: "var(--soft)" }}>{rupiah(r.avgCost)}</td>}
                   {!staff && <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{rupiah(r.stockValue)}</td>}
                 </tr>
