@@ -3,7 +3,12 @@ import type { ReactNode } from "react";
 import { cookies } from "next/headers";
 import { getOpsSession, type OpsRole } from "@/lib/adminAuth";
 import { countActivitySince } from "@/lib/opsStore";
+import { OPS_STR, opsLangFromCookie, type OpsStrings } from "@/lib/opsI18n";
 import ActivityBell from "./ActivityBell";
+import OpsLangToggle from "./OpsLangToggle";
+
+type ScrKey = keyof OpsStrings["scr"];
+type GroupKey = keyof OpsStrings["groups"];
 
 /** Shared shell + tab nav for the Ops (inventory) screens. Mobile-first: these
  *  are used standing in the kitchen, phone in hand (PRD §7). */
@@ -19,10 +24,12 @@ export function qty(n: number): string {
 
 interface Tab {
   href: string;
-  label: string;
+  label: string; // English identity (also the React key); display is localized via `k`
+  k: ScrKey;
 }
 interface Group {
-  label: string;
+  label: string; // English identity used for active-group matching
+  key: GroupKey;
   icon: string;
   tabs: Tab[];
 }
@@ -30,53 +37,58 @@ interface Group {
 // Overview home + five categories (grouped nav so the 13 screens aren't
 // overwhelming — top row picks a category, second row its screens). Icons make
 // the categories scannable at a glance on a phone in the kitchen (PRD §7).
-const HOME: Tab = { href: "/admin/ops/today", label: "Today" };
+const HOME: Tab = { href: "/admin/ops/today", label: "Today", k: "stock" /* unused; HOME uses t.today */ };
 
 const GROUPS: Group[] = [
   {
     label: "Stock",
+    key: "stock",
     icon: "📦",
     tabs: [
-      { href: "/admin/ops/stock", label: "Stock" },
-      { href: "/admin/ops/stock/ledger", label: "Ledger" },
-      { href: "/admin/ops/items", label: "Items" },
-      { href: "/admin/ops/receive", label: "Receive" },
-      { href: "/admin/ops/opname", label: "Opname" },
-      { href: "/admin/ops/waste", label: "Waste" },
+      { href: "/admin/ops/stock", label: "Stock", k: "stock" },
+      { href: "/admin/ops/stock/ledger", label: "Ledger", k: "ledger" },
+      { href: "/admin/ops/items", label: "Items", k: "items" },
+      { href: "/admin/ops/receive", label: "Receive", k: "receive" },
+      { href: "/admin/ops/opname", label: "Opname", k: "opname" },
+      { href: "/admin/ops/waste", label: "Waste", k: "waste" },
     ],
   },
   {
     label: "Production",
+    key: "production",
     icon: "🥐",
     tabs: [
-      { href: "/admin/ops/recipes", label: "Recipes" },
-      { href: "/admin/ops/production", label: "Batches" },
+      { href: "/admin/ops/recipes", label: "Recipes", k: "recipes" },
+      { href: "/admin/ops/production", label: "Batches", k: "batches" },
     ],
   },
   {
     label: "Order",
+    key: "order",
     icon: "🧾",
     tabs: [
-      { href: "/admin/ops/board", label: "Board" },
-      { href: "/admin/ops/orders", label: "Orders" },
-      { href: "/admin/ops/bake-sheet", label: "Bake" },
-      { href: "/admin/ops/landing-menu", label: "Menu" },
-      { href: "/admin/ops/menu-map", label: "Menu links" },
+      { href: "/admin/ops/board", label: "Board", k: "board" },
+      { href: "/admin/ops/orders", label: "Orders", k: "orders" },
+      { href: "/admin/ops/bake-sheet", label: "Bake", k: "bake" },
+      { href: "/admin/ops/landing-menu", label: "Menu", k: "menu" },
+      { href: "/admin/ops/menu-map", label: "Menu links", k: "menulinks" },
     ],
   },
   {
     label: "Finance",
+    key: "finance",
     icon: "💰",
     tabs: [
-      { href: "/admin/ops/money", label: "Money" },
-      { href: "/admin/ops/pricing", label: "Pricing" },
-      { href: "/admin/ops/forecast", label: "Forecast" },
+      { href: "/admin/ops/money", label: "Money", k: "money" },
+      { href: "/admin/ops/pricing", label: "Pricing", k: "pricing" },
+      { href: "/admin/ops/forecast", label: "Forecast", k: "forecast" },
     ],
   },
   {
     label: "HR",
+    key: "hr",
     icon: "👥",
-    tabs: [{ href: "/admin/ops/team", label: "Team" }],
+    tabs: [{ href: "/admin/ops/team", label: "Team", k: "team" }],
   },
 ];
 
@@ -86,17 +98,19 @@ const GROUPS: Group[] = [
 const STAFF_GROUPS: Group[] = [
   {
     label: "Stock",
+    key: "stock",
     icon: "📦",
     tabs: [
-      { href: "/admin/ops/stock", label: "Stock" },
-      { href: "/admin/ops/receive", label: "Receive" },
-      { href: "/admin/ops/opname", label: "Opname" },
+      { href: "/admin/ops/stock", label: "Stock", k: "stock" },
+      { href: "/admin/ops/receive", label: "Receive", k: "receive" },
+      { href: "/admin/ops/opname", label: "Opname", k: "opname" },
     ],
   },
   {
     label: "Production",
+    key: "production",
     icon: "🥐",
-    tabs: [{ href: "/admin/ops/production", label: "Batches" }],
+    tabs: [{ href: "/admin/ops/production", label: "Batches", k: "batches" }],
   },
 ];
 
@@ -143,6 +157,10 @@ export async function OpsShell({
   const role: OpsRole = session?.role === "staff" ? "staff" : "super_admin";
   const groups = groupsFor(role);
 
+  const jar = await cookies();
+  const lang = opsLangFromCookie(jar.get("ops_lang")?.value);
+  const L = OPS_STR[lang];
+
   const activeGroup = groups.find((g) => g.tabs.some((t) => t.href === active)) ?? null;
   const onHome = active === HOME.href;
 
@@ -151,7 +169,7 @@ export async function OpsShell({
   // Activity bell (super_admin only): unread = entries logged since last opened.
   let unread = 0;
   if (role === "super_admin") {
-    const seen = (await cookies()).get("ops_activity_seen")?.value ?? null;
+    const seen = jar.get("ops_activity_seen")?.value ?? null;
     unread = await countActivitySince(seen);
   }
 
@@ -167,16 +185,16 @@ export async function OpsShell({
           </div>
         </div>
 
-        <Link href={HOME.href} className={sideItem(onHome)}>🗓️ {HOME.label}</Link>
+        <Link href={HOME.href} className={sideItem(onHome)}>🗓️ {L.today}</Link>
 
         {groups.map((g) => (
           <div key={g.label}>
             <div style={{ fontSize: 10, fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.05em", opacity: 0.42, padding: "14px 12px 5px" }}>
-              {g.icon} {g.label}
+              {g.icon} {L.groups[g.key]}
             </div>
             {g.tabs.map((t) => (
               <Link key={t.href} href={t.href} className={sideItem(t.href === active)}>
-                {t.label}
+                {L.scr[t.k]}
               </Link>
             ))}
           </div>
@@ -184,7 +202,7 @@ export async function OpsShell({
 
         <div style={{ flex: 1 }} />
         {role === "super_admin" && (
-          <Link href="/admin" style={{ padding: "10px 12px", fontSize: 12.5, fontWeight: 800, color: "rgba(244,235,221,0.6)", textDecoration: "none" }}>‹ Queue</Link>
+          <Link href="/admin" style={{ padding: "10px 12px", fontSize: 12.5, fontWeight: 800, color: "rgba(244,235,221,0.6)", textDecoration: "none" }}>‹ {L.queue}</Link>
         )}
       </nav>
 
@@ -195,7 +213,10 @@ export async function OpsShell({
             <div className="font-display" style={{ fontSize: "clamp(20px,3vw,25px)", color: "var(--choco)" }}>{title}</div>
             {subtitle && <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--soft)", marginTop: 3 }}>{subtitle}</div>}
           </div>
-          {role === "super_admin" && <ActivityBell unread={unread} />}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <OpsLangToggle lang={lang} />
+            {role === "super_admin" && <ActivityBell unread={unread} lang={lang} />}
+          </div>
         </header>
 
         {/* <900px — brand + title header, then the two-row chip nav (unchanged). */}
@@ -208,24 +229,25 @@ export async function OpsShell({
                 {subtitle && <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>{subtitle}</div>}
               </div>
             </div>
-            {role === "super_admin" && (
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <ActivityBell unread={unread} />
-                <Link href="/admin" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>‹ Queue</Link>
-              </div>
-            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <OpsLangToggle lang={lang} />
+              {role === "super_admin" && <ActivityBell unread={unread} lang={lang} />}
+              {role === "super_admin" && (
+                <Link href="/admin" style={{ fontSize: 13, fontWeight: 800, color: "var(--soft)", textDecoration: "none" }}>‹ {L.queue}</Link>
+              )}
+            </div>
           </div>
 
           {/* Row 1 — Today + category chips (each links to its first screen). */}
           <div className="ops2-navrow" style={{ paddingTop: 6, display: "flex", gap: 6, overflowX: "auto" }}>
             <Link href={HOME.href} style={chipStyle(onHome)}>
               <span aria-hidden style={{ fontSize: 14 }}>🗓️</span>
-              {HOME.label}
+              {L.today}
             </Link>
             {groups.map((g) => (
               <Link key={g.label} href={g.tabs[0].href} style={chipStyle(activeGroup?.label === g.label)}>
                 <span aria-hidden style={{ fontSize: 14 }}>{g.icon}</span>
-                {g.label}
+                {L.groups[g.key]}
               </Link>
             ))}
           </div>
@@ -251,7 +273,7 @@ export async function OpsShell({
                       fontWeight: on ? 800 : 700,
                     }}
                   >
-                    {t.label}
+                    {L.scr[t.k]}
                   </Link>
                 );
               })}

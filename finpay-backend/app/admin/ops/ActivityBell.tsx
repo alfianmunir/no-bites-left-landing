@@ -9,6 +9,7 @@
  */
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { OPS_STR, type OpsLang } from "@/lib/opsI18n";
 
 interface Activity {
   id: string;
@@ -31,8 +32,9 @@ function hhmm(iso: string): string {
   }
 }
 
-export default function ActivityBell({ unread }: { unread: number }) {
+export default function ActivityBell({ unread, lang }: { unread: number; lang: OpsLang }) {
   const router = useRouter();
+  const L = OPS_STR[lang];
   const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState(false); // clears the badge once viewed
   const [loading, setLoading] = useState(false);
@@ -120,31 +122,31 @@ export default function ActivityBell({ unread }: { unread: number }) {
             {/* Header */}
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, padding: "18px 18px 12px", borderBottom: "1.5px solid var(--line)" }}>
               <div>
-                <div className="font-display" style={{ fontSize: 20, color: "var(--choco)" }}>Activity</div>
-                <div style={{ fontSize: 12, color: "var(--soft)", marginTop: 2 }}>Every change is logged here</div>
+                <div className="font-display" style={{ fontSize: 20, color: "var(--choco)" }}>{L.activity}</div>
+                <div style={{ fontSize: 12, color: "var(--soft)", marginTop: 2 }}>{L.activitySub}</div>
               </div>
               <button onClick={() => setOpen(false)} aria-label="Close" style={{ border: "none", background: "transparent", fontSize: 22, color: "var(--soft)", cursor: "pointer", lineHeight: 1 }}>×</button>
             </div>
 
             {/* Notify channels */}
             <div style={{ margin: "12px 14px", padding: "12px 14px", background: "var(--surface2)", borderRadius: 14, border: "1.5px solid var(--line)" }}>
-              <div style={{ fontSize: 11.5, fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--soft)", marginBottom: 10 }}>Notify changes via</div>
-              <ToggleRow label="WhatsApp" note="stubbed — no provider yet" on={channels.whatsapp} busy={busyCh === "whatsapp"} onClick={() => toggle("whatsapp")} />
-              <ToggleRow label="Email" on={channels.email} busy={busyCh === "email"} onClick={() => toggle("email")} />
+              <div style={{ fontSize: 11.5, fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--soft)", marginBottom: 10 }}>{L.notifyVia}</div>
+              <ToggleRow label={L.whatsapp} note={L.whatsappNote} on={channels.whatsapp} busy={busyCh === "whatsapp"} onClick={() => toggle("whatsapp")} />
+              <ToggleRow label={L.email} on={channels.email} busy={busyCh === "email"} onClick={() => toggle("email")} />
             </div>
 
             {/* Feed */}
             <div style={{ flex: 1, overflowY: "auto", padding: "0 4px" }}>
               {loading ? (
-                <div style={{ padding: 20, textAlign: "center", color: "var(--soft)", fontSize: 13 }}>Loading…</div>
+                <div style={{ padding: 20, textAlign: "center", color: "var(--soft)", fontSize: 13 }}>{L.loadingWord}</div>
               ) : activities.length === 0 ? (
-                <div style={{ padding: 24, textAlign: "center", color: "var(--soft)", fontSize: 13 }}>No activity yet.</div>
+                <div style={{ padding: 24, textAlign: "center", color: "var(--soft)", fontSize: 13 }}>{L.noActivity}</div>
               ) : (
                 activities.map((a) => (
                   <div key={a.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px", borderBottom: "1px solid var(--line)" }}>
                     <span aria-hidden style={{ width: 8, height: 8, borderRadius: 999, background: a.tone, flexShrink: 0, marginTop: 5 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, color: "var(--ink)", lineHeight: 1.4 }}>{a.messageEn}</div>
+                      <div style={{ fontSize: 13, color: "var(--ink)", lineHeight: 1.4 }}>{lang === "id" ? a.messageId : a.messageEn}</div>
                       <div style={{ fontSize: 11, color: "var(--soft)", marginTop: 2 }}>{hhmm(a.ts)}</div>
                     </div>
                   </div>
@@ -154,7 +156,7 @@ export default function ActivityBell({ unread }: { unread: number }) {
 
             {/* Footer */}
             <div style={{ padding: "12px 14px", borderTop: "1.5px solid var(--line)" }}>
-              <button onClick={() => setOpen(false)} style={{ width: "100%", padding: "10px", borderRadius: 12, border: "1.5px solid var(--line)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>Mark all read</button>
+              <button onClick={() => setOpen(false)} style={{ width: "100%", padding: "10px", borderRadius: 12, border: "1.5px solid var(--line)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 13, cursor: "pointer" }}>{L.markAllRead}</button>
             </div>
           </div>
         </div>

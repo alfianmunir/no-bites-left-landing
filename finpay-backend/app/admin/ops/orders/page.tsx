@@ -10,10 +10,12 @@
  * the webhook didn't post (backstop only).
  */
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { isAdminSession } from "@/lib/adminAuth";
 import { getStore } from "@/lib/db";
 import type { Order } from "@/lib/orders";
+import { OPS_STR, opsLangFromCookie } from "@/lib/opsI18n";
 import {
   opsEnabled,
   listChannels,
@@ -36,6 +38,9 @@ export const dynamic = "force-dynamic";
 export default async function OpsOrdersPage() {
   if (!(await isAdminSession())) redirect("/admin/login");
 
+  const lang = opsLangFromCookie((await cookies()).get("ops_lang")?.value);
+  const L = OPS_STR[lang];
+
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
   const tomorrow = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
@@ -55,7 +60,7 @@ export default async function OpsOrdersPage() {
   // and invoices are unavailable — degrade gracefully).
   if (!opsEnabled) {
     return (
-      <OpsShell active="/admin/ops/orders" title="Orders" subtitle={`${active.length} website order(s)`}>
+      <OpsShell active="/admin/ops/orders" title={L.scr.orders} subtitle={`${active.length} ${L.typeWebsite}`}>
         <AllOrdersList
           webOrders={active}
           channelOrders={[]}
@@ -65,6 +70,7 @@ export default async function OpsOrdersPage() {
           tomorrow={tomorrow}
           webEcon={{}}
           websiteFee={{ pct: 0, flat: 0 }}
+          lang={lang}
         />
         <div style={{ marginTop: 18 }}><DbNotice /></div>
       </OpsShell>
@@ -94,19 +100,19 @@ export default async function OpsOrdersPage() {
   const entryChannels = channels.filter((c) => c.name !== "website");
   const websiteChannel = channels.find((c) => c.name === "website");
   const websiteFee = { pct: websiteChannel?.feePct ?? 0, flat: websiteChannel?.feeFlat ?? 0 };
-  const subtitle = `${active.length} website order(s) · ${channelOrders.length} channel order(s)`;
+  const subtitle = `${active.length} ${L.typeWebsite} · ${channelOrders.length} ${L.typeChannel}`;
 
   return (
-    <OpsShell active="/admin/ops/orders" title="Orders" subtitle={subtitle}>
+    <OpsShell active="/admin/ops/orders" title={L.scr.orders} subtitle={subtitle}>
       <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
         {/* 1. To prepare */}
         <section>
-          <PrepList prep={prep} />
+          <PrepList prep={prep} lang={lang} />
         </section>
 
         {/* 2. New order */}
         <section>
-          <OrderEntry channels={entryChannels} products={products} />
+          <OrderEntry channels={entryChannels} products={products} lang={lang} />
         </section>
 
         {/* Unmapped SKU warning (cost/stock won't post until linked). */}
@@ -130,6 +136,7 @@ export default async function OpsOrdersPage() {
             tomorrow={tomorrow}
             webEcon={webEcon}
             websiteFee={websiteFee}
+            lang={lang}
           />
         </section>
       </div>

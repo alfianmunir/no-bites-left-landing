@@ -18,6 +18,7 @@ import { useRouter } from "next/navigation";
 import { agingBucket, formatPct, type AgingBucket } from "@/lib/opsOrderMath";
 import type { SalesOrderRow, InvoiceRow } from "@/lib/opsStore";
 import type { Order } from "@/lib/orders";
+import { OPS_STR, type OpsLang, type OpsStrings } from "@/lib/opsI18n";
 import AdminOrderDetail from "@/app/_components/AdminOrderDetail";
 
 function rupiah(n: number): string {
@@ -71,9 +72,9 @@ function itemsSummary(items: { name: string; qty: number }[]): string {
   return items.map((i) => `${qtyFmt(i.qty)}× ${i.name}`).join(" · ");
 }
 
-function dateLabel(dk: string, today: string, tomorrow: string): string {
-  if (dk === today) return `Today · ${dk}`;
-  if (dk === tomorrow) return `Tomorrow · ${dk}`;
+function dateLabel(dk: string, today: string, tomorrow: string, L: OpsStrings): string {
+  if (dk === today) return `${L.today2} · ${dk}`;
+  if (dk === tomorrow) return `${L.tomorrow2} · ${dk}`;
   return dk;
 }
 
@@ -112,6 +113,7 @@ export default function AllOrdersList({
   tomorrow,
   webEcon,
   websiteFee,
+  lang,
 }: {
   webOrders: Order[];
   channelOrders: SalesOrderRow[];
@@ -123,8 +125,10 @@ export default function AllOrdersList({
   // item-sum gross with no COGS when an order isn't realized yet.
   webEcon: Record<string, { gross: number; cogs: number; feePct: number; feeFlat: number }>;
   websiteFee: { pct: number; flat: number };
+  lang: OpsLang;
 }) {
   const router = useRouter();
+  const L = OPS_STR[lang];
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [fType, setFType] = useState<"all" | "website" | "channel">("all");
@@ -225,7 +229,7 @@ export default function AllOrdersList({
     try { if (await post("/api/admin/ops/invoice", { invoiceId, status: "paid" })) router.refresh(); } finally { setBusy(false); }
   };
   const cancelChannel = async (id: string) => {
-    if (!window.confirm("Cancel this order? This returns its stock to inventory, reverses any cash posted, and (for B2B) voids the invoice.")) return;
+    if (!window.confirm(L.cancelConfirm)) return;
     setBusy(true);
     try { if (await post("/api/admin/ops/order/cancel", { orderId: id })) router.refresh(); } finally { setBusy(false); }
   };
@@ -260,19 +264,25 @@ export default function AllOrdersList({
   // the AR list (paid ones stay as history).
   const arInvoices = invoices.filter((i) => i.status !== "void");
 
-  const typeChips: [typeof fType, string][] = [["all", "All"], ["website", "Website"], ["channel", "Channel"]];
-  const payChips: [typeof fPaid, string][] = [["all", "All"], ["paid", "Paid"], ["unpaid", "Unpaid"]];
+  const typeChips: [typeof fType, string][] = [["all", L.all], ["website", L.typeWebsite], ["channel", L.typeChannel]];
+  const payChips: [typeof fPaid, string][] = [["all", L.all], ["paid", L.paid], ["unpaid", L.unpaid]];
+  const bulkOptions = [
+    { value: "preparing", label: L.bulkPreparing },
+    { value: "packed", label: L.bulkPacked },
+    { value: "mid", label: L.bulkMid },
+    { value: "done", label: L.bulkDone },
+  ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingBottom: selected.size > 0 ? 84 : 0 }}>
-      <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>All orders</div>
+      <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>{L.allOrders}</div>
 
       {/* Filters */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search customer, item, channel…"
+          placeholder={L.searchPh}
           style={{ flex: "1 1 200px", minWidth: 160, padding: "9px 13px", borderRadius: 11, border: "1.5px solid var(--line)", background: "#fff", fontSize: 13, fontWeight: 700, color: "var(--ink)" }}
         />
         <div style={{ display: "flex", gap: 6 }}>
@@ -289,7 +299,7 @@ export default function AllOrdersList({
 
       {/* Date-grouped list */}
       {groups.length === 0 ? (
-        <div style={{ ...card, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No orders match.</div>
+        <div style={{ ...card, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>{L.noResults}</div>
       ) : (
         groups.map(([dk, list]) => {
           const keys = list.map((r) => r.key);
@@ -298,9 +308,9 @@ export default function AllOrdersList({
           return (
             <div key={dk}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 900, color: "var(--choco)" }}>{dateLabel(dk, today, tomorrow)} <span style={{ color: "var(--soft)", fontWeight: 700 }}>· {list.length}</span></div>
+                <div style={{ fontSize: 12.5, fontWeight: 900, color: "var(--choco)" }}>{dateLabel(dk, today, tomorrow, L)} <span style={{ color: "var(--soft)", fontWeight: 700 }}>· {list.length}</span></div>
                 <button onClick={() => toggleGroup(keys, allOn)} style={{ padding: "4px 10px", borderRadius: 999, border: "1.5px solid var(--line)", background: someOn ? "var(--surface2)" : "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 11.5, cursor: "pointer" }}>
-                  {allOn ? "Deselect all" : "Select all"}
+                  {allOn ? L.deselectAll : L.selectAll}
                 </button>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -311,6 +321,7 @@ export default function AllOrdersList({
                     invoices={invoices}
                     selected={selected.has(r.key)}
                     busy={busy}
+                    L={L}
                     onToggle={() => toggle(r.key)}
                     onOpen={r.order ? () => setOpenOrder(r.order!) : undefined}
                     onAdvanceWeb={() => advanceWeb(r.id)}
@@ -328,7 +339,7 @@ export default function AllOrdersList({
       {/* Expired website orders */}
       {expired.length > 0 && (
         <div>
-          <div style={{ ...sectionLabel, marginTop: 4 }}>EXPIRED · {expired.length}</div>
+          <div style={{ ...sectionLabel, marginTop: 4 }}>{L.expired} · {expired.length}</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {expired.map((o) => (
               <div key={o.id} style={{ padding: 12, borderRadius: 14, background: "#f2ede2", border: "1.5px dashed var(--line)", opacity: 0.7 }}>
@@ -336,7 +347,7 @@ export default function AllOrdersList({
                   <span style={{ fontWeight: 800, fontSize: 13.5, color: "var(--soft)" }}>#{o.id}</span>
                   <span style={{ fontSize: 12, color: "var(--soft)" }}>{rupiah(o.amount)}</span>
                 </div>
-                <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>Auto-cancelled — payment expired</div>
+                <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>{L.expiredNote}</div>
               </div>
             ))}
           </div>
@@ -346,10 +357,10 @@ export default function AllOrdersList({
       {/* B2B invoices (AR) — void (cancelled-order) invoices excluded */}
       {arInvoices.length > 0 && (
         <div>
-          <div style={sectionLabel}>B2B INVOICES (AR) · {outstanding.length} open · {rupiah(outstandingTotal)}</div>
+          <div style={sectionLabel}>{L.arLabel} · {outstanding.length} {L.open} · {rupiah(outstandingTotal)}</div>
           <div style={{ ...card, padding: 0, overflow: "hidden" }}>
             {arInvoices.map((inv) => (
-              <InvoiceItem key={inv.id} inv={inv} today={today} busy={busy} onMarkPaid={markInvoicePaid} />
+              <InvoiceItem key={inv.id} inv={inv} today={today} busy={busy} L={L} onMarkPaid={markInvoicePaid} />
             ))}
           </div>
         </div>
@@ -359,25 +370,25 @@ export default function AllOrdersList({
       {selected.size > 0 && (
         <div style={{ position: "sticky", bottom: 12, zIndex: 30 }}>
           <div style={{ background: "var(--dark)", color: "var(--on-dark)", borderRadius: 14, padding: 12, boxShadow: "0 10px 26px rgba(29,19,10,0.3)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <span style={{ fontWeight: 900, fontSize: 13 }}>{selected.size} selected</span>
+            <span style={{ fontWeight: 900, fontSize: 13 }}>{selected.size} {L.selected}</span>
             <select value={bulkStage} onChange={(e) => setBulkStage(e.target.value)} style={bulkSelect}>
-              <option value="">Set stage…</option>
-              {BULK_STAGE_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+              <option value="">{L.setStage}</option>
+              {bulkOptions.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
             </select>
             <select value={bulkPay} onChange={(e) => setBulkPay(e.target.value)} style={bulkSelect}>
-              <option value="">Set payment…</option>
-              <option value="unpaid">Unpaid</option>
-              <option value="paid">Paid</option>
+              <option value="">{L.setPayment}</option>
+              <option value="unpaid">{L.unpaid}</option>
+              <option value="paid">{L.paid}</option>
             </select>
-            <span style={{ fontSize: 10.5, opacity: 0.7, maxWidth: 220, lineHeight: 1.3 }}>website orders move forward only · payment applies to channel orders</span>
+            <span style={{ fontSize: 10.5, opacity: 0.7, maxWidth: 220, lineHeight: 1.3 }}>{L.bulkNote}</span>
             <span style={{ flex: 1 }} />
-            <button onClick={clearSel} style={{ border: "none", background: "transparent", color: "rgba(244,235,221,0.7)", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Clear</button>
+            <button onClick={clearSel} style={{ border: "none", background: "transparent", color: "rgba(244,235,221,0.7)", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>{L.clear}</button>
             <button
               onClick={applyBulk}
               disabled={busy || (!bulkStage && !bulkPay)}
               style={{ padding: "9px 16px", borderRadius: 10, border: "none", background: busy || (!bulkStage && !bulkPay) ? "var(--soft)" : "var(--orange)", color: "#241503", fontWeight: 900, fontSize: 13, cursor: busy || (!bulkStage && !bulkPay) ? "default" : "pointer" }}
             >
-              {busy ? "Applying…" : `Apply to ${selected.size}`}
+              {busy ? L.applying : `${L.applyTo} ${selected.size}`}
             </button>
           </div>
         </div>
@@ -396,12 +407,13 @@ function filterChip(on: boolean): React.CSSProperties {
 
 // -------------------------------------------------------------- Row card
 function RowCard({
-  row, invoices, selected, busy, onToggle, onOpen, onAdvanceWeb, onPatchChannel, onMarkInvoicePaid, onCancelChannel,
+  row, invoices, selected, busy, L, onToggle, onOpen, onAdvanceWeb, onPatchChannel, onMarkInvoicePaid, onCancelChannel,
 }: {
   row: UnifiedRow;
   invoices: InvoiceRow[];
   selected: boolean;
   busy: boolean;
+  L: OpsStrings;
   onToggle: () => void;
   onOpen?: () => void;
   onAdvanceWeb: () => void;
@@ -412,6 +424,7 @@ function RowCard({
   const isWeb = row.kind === "website";
   const cancelled = row.co?.status === "cancelled";
   const refunded = row.co?.status === "refunded";
+  const badgeText = isWeb ? L.typeWebsite : row.badge;
 
   // Cancelled channel orders render muted, controls off (ledger already reversed).
   if (cancelled) {
@@ -419,10 +432,10 @@ function RowCard({
       <div style={{ background: "#f2ede2", border: "1.5px dashed var(--line)", borderRadius: 14, padding: 14, opacity: 0.7, display: "flex", flexDirection: "column", gap: 4 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 14, fontWeight: 800, color: "var(--soft)", textDecoration: "line-through" }}>{row.title}</span>
-          <span style={{ fontSize: 10.5, fontWeight: 900, textTransform: "uppercase", color: "var(--red)", border: "1.5px solid var(--red)", borderRadius: 999, padding: "2px 8px" }}>Cancelled</span>
+          <span style={{ fontSize: 10.5, fontWeight: 900, textTransform: "uppercase", color: "var(--red)", border: "1.5px solid var(--red)", borderRadius: 999, padding: "2px 8px" }}>{L.cancelled}</span>
         </div>
         {row.itemsLine && <div style={{ fontSize: 12.5, color: "var(--soft)" }}>{row.itemsLine}</div>}
-        <div style={{ fontSize: 11.5, color: "var(--soft)" }}>{row.badge} · Gross {rupiah(row.gross)} · stock returned, cash reversed</div>
+        <div style={{ fontSize: 11.5, color: "var(--soft)" }}>{row.badge} · {L.gross} {rupiah(row.gross)} · {L.stockReturned}</div>
       </div>
     );
   }
@@ -442,18 +455,18 @@ function RowCard({
       style={{ position: "relative", background: bg, border, borderRadius: 14, padding: 14, display: "flex", flexDirection: "column", gap: 8, cursor: onOpen ? "pointer" : "default" }}
     >
       {isWeb && row.isNew && (
-        <div style={{ position: "absolute", top: -9, left: 14, background: "var(--orange)", color: "#fff", fontSize: 10, fontWeight: 900, padding: "2px 8px", borderRadius: 999 }}>NEW · PAID</div>
+        <div style={{ position: "absolute", top: -9, left: 14, background: "var(--orange)", color: "#fff", fontSize: 10, fontWeight: 900, padding: "2px 8px", borderRadius: 999 }}>{L.newPaid}</div>
       )}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
         <label onClick={(e) => e.stopPropagation()} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
           <input type="checkbox" checked={selected} onChange={onToggle} style={{ width: 17, height: 17, accentColor: "var(--orange)", cursor: "pointer" }} />
           <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>{row.title}</span>
-          <span style={{ ...badgeStyle, fontSize: 10.5, fontWeight: 900, textTransform: "uppercase", padding: "2px 8px", borderRadius: 999, letterSpacing: "0.03em" }}>{row.badge}</span>
+          <span style={{ ...badgeStyle, fontSize: 10.5, fontWeight: 900, textTransform: "uppercase", padding: "2px 8px", borderRadius: 999, letterSpacing: "0.03em" }}>{badgeText}</span>
         </label>
         {isWeb && (
           <div style={{ fontSize: 12, fontWeight: 800, color: row.overdue ? "var(--red)" : "var(--choco)" }}>
-            🛍 pickup {row.order!.pickup_date ?? "—"}{row.overdue ? " · overdue" : ""}
+            🛍 {L.pickup} {row.order!.pickup_date ?? "—"}{row.overdue ? ` · ${L.overdueWord}` : ""}
           </div>
         )}
       </div>
@@ -461,10 +474,10 @@ function RowCard({
       {row.itemsLine && <div style={{ fontSize: 13, color: "var(--ink)" }}>{row.itemsLine}</div>}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 14px", fontSize: 12.5, color: "var(--soft)" }}>
-        <span>Gross <strong style={{ color: "var(--ink)" }}>{rupiah(row.gross)}</strong></span>
-        {row.hasFee && row.fee > 0 && <span>Fee <strong style={{ color: "var(--red)" }}>−{rupiah(row.fee)}</strong></span>}
-        <span>Net <strong style={{ color: "var(--ink)" }}>{rupiah(row.net)}</strong></span>
-        <span>Margin <strong style={{ color: row.margin < 0.3 ? "var(--red)" : "var(--green)" }}>{formatPct(row.margin)}</strong></span>
+        <span>{L.gross} <strong style={{ color: "var(--ink)" }}>{rupiah(row.gross)}</strong></span>
+        {row.hasFee && row.fee > 0 && <span>{L.fee} <strong style={{ color: "var(--red)" }}>−{rupiah(row.fee)}</strong></span>}
+        <span>{L.net} <strong style={{ color: "var(--ink)" }}>{rupiah(row.net)}</strong></span>
+        <span>{L.margin} <strong style={{ color: row.margin < 0.3 ? "var(--red)" : "var(--green)" }}>{formatPct(row.margin)}</strong></span>
       </div>
 
       {/* Footer */}
@@ -472,20 +485,20 @@ function RowCard({
         {isWeb ? (
           <>
             <span aria-hidden style={{ width: 9, height: 9, borderRadius: 999, background: WEB[row.webStatus!].color, flexShrink: 0 }} />
-            <span style={{ fontSize: 12.5, fontWeight: 800, color: WEB[row.webStatus!].color }}>{WEB[row.webStatus!].label}</span>
+            <span style={{ fontSize: 12.5, fontWeight: 800, color: WEB[row.webStatus!].color }}>{L.webStage[row.webStatus!]}</span>
             {WEB[row.webStatus!].next && (
               <button onClick={onAdvanceWeb} disabled={busy} style={{ padding: "6px 11px", borderRadius: 999, border: "1.5px solid var(--line)", background: "var(--surface2)", color: "var(--choco)", fontWeight: 800, fontSize: 11.5, cursor: "pointer", whiteSpace: "nowrap" }}>
-                → {WEB[WEB[row.webStatus!].next as WebStatus].label}
+                → {L.webStage[WEB[row.webStatus!].next as WebStatus]}
               </button>
             )}
             <span style={{ flex: 1 }} />
-            <span style={{ fontSize: 12, fontWeight: 800, color: "var(--green)" }}>Paid</span>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "var(--green)" }}>{L.paid}</span>
           </>
         ) : (
           <>
             <span aria-hidden style={{ width: 9, height: 9, borderRadius: 999, background: CH_STAGE[row.co!.fulfillmentStatus]?.color ?? "var(--soft)", flexShrink: 0 }} />
             <select value={row.co!.fulfillmentStatus} disabled={busy} onChange={(e) => onPatchChannel({ fulfillmentStatus: e.target.value })} style={{ padding: "6px 10px", borderRadius: 999, border: "1.5px solid var(--line)", background: "#fff", color: "var(--ink)", fontSize: 12.5, fontWeight: 800, cursor: "pointer" }}>
-              {CH_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+              {CH_STAGES.map((s) => <option key={s.key} value={s.key}>{L.chStage[s.key] ?? s.label}</option>)}
               {/* keep website-only statuses selectable if the row already holds one */}
               {!CH_STAGE[row.co!.fulfillmentStatus] && <option value={row.co!.fulfillmentStatus}>{row.co!.fulfillmentStatus}</option>}
             </select>
@@ -493,23 +506,23 @@ function RowCard({
             {row.isB2B ? (
               <>
                 <span style={{ fontSize: 12, fontWeight: 800, color: inv?.status === "paid" ? "var(--green)" : "var(--orange)" }}>
-                  invoice {inv?.number ?? "—"} · {inv?.status ?? "—"}
+                  {inv?.number ?? "—"} · {inv ? (inv.status === "paid" ? L.paid : inv.status === "sent" ? L.sent : inv.status) : "—"}
                 </span>
                 {inv && inv.status !== "paid" && (
-                  <button onClick={() => onMarkInvoicePaid(inv.id)} disabled={busy} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--green)", background: "#fff", color: "var(--green)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Mark paid</button>
+                  <button onClick={() => onMarkInvoicePaid(inv.id)} disabled={busy} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--green)", background: "#fff", color: "var(--green)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>{L.markPaid}</button>
                 )}
               </>
             ) : (
               <>
-                <span style={{ fontSize: 12, fontWeight: 800, color: row.paid ? "var(--green)" : "var(--orange)" }}>{row.paid ? "Paid" : "Unpaid"}</span>
+                <span style={{ fontSize: 12, fontWeight: 800, color: row.paid ? "var(--green)" : "var(--orange)" }}>{row.paid ? L.paid : L.unpaid}</span>
                 <button onClick={() => onPatchChannel({ paymentStatus: row.paid ? "unpaid" : "paid" })} disabled={busy} style={{ padding: "6px 12px", borderRadius: 999, border: `1.5px solid ${row.paid ? "var(--line)" : "var(--green)"}`, background: "#fff", color: row.paid ? "var(--soft)" : "var(--green)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>
-                  {row.paid ? "Mark unpaid" : "Mark paid"}
+                  {row.paid ? L.markUnpaid : L.markPaid}
                 </button>
               </>
             )}
             {!refunded && (
               <button onClick={onCancelChannel} disabled={busy} title="Cancel order & reverse ledger" style={{ padding: "6px 10px", borderRadius: 999, border: "1.5px solid var(--line)", background: "#fff", color: "var(--red)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>
-                Cancel
+                {L.cancel}
               </button>
             )}
           </>
@@ -520,26 +533,26 @@ function RowCard({
 }
 
 // -------------------------------------------------------------- Invoice row
-function InvoiceItem({ inv, today, busy, onMarkPaid }: { inv: InvoiceRow; today: string; busy: boolean; onMarkPaid: (id: string) => void }) {
+function InvoiceItem({ inv, today, busy, L, onMarkPaid }: { inv: InvoiceRow; today: string; busy: boolean; L: OpsStrings; onMarkPaid: (id: string) => void }) {
   const bucket = agingBucket(inv.status, inv.dueDate, today);
   // Status-first labels: agingBucket maps BOTH paid and void → "paid", so key off
-  // inv.status directly (a bare `${bucket}d overdue` would print "paidd overdue"
-  // for a void invoice). Only genuinely-open invoices can be marked paid.
+  // inv.status directly (a bare `${bucket} overdue` would mislabel a void invoice).
+  // Only genuinely-open invoices can be marked paid.
   const isPaid = inv.status === "paid";
   const isVoid = inv.status === "void";
-  const label = isPaid ? "paid" : isVoid ? "void" : bucket === "current" ? "current" : `${bucket}d overdue`;
+  const label = isPaid ? L.paid : isVoid ? L.voidWord : bucket === "current" ? L.current : `${bucket}d ${L.overdueSuffix}`;
   const labelColor = isVoid ? "var(--soft)" : BUCKET_COLOR[bucket];
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
       <div style={{ fontSize: 13 }}>
         <span style={{ fontWeight: 800 }}>{inv.customerRef || "—"}</span>
-        <span style={{ color: "var(--soft)" }}> · {inv.number ?? inv.salesOrderId.slice(0, 6)} · due {inv.dueDate ?? "—"}</span>
+        <span style={{ color: "var(--soft)" }}> · {inv.number ?? inv.salesOrderId.slice(0, 6)} · {L.due} {inv.dueDate ?? "—"}</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontWeight: 800, fontSize: 13.5 }}>{rupiah(inv.amount)}</span>
         <span style={{ fontSize: 11.5, fontWeight: 800, color: labelColor }}>{label}</span>
         {!isPaid && !isVoid && (
-          <button onClick={() => onMarkPaid(inv.id)} disabled={busy} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--green)", background: "#fff", color: "var(--green)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Mark paid</button>
+          <button onClick={() => onMarkPaid(inv.id)} disabled={busy} style={{ padding: "6px 12px", borderRadius: 999, border: "1.5px solid var(--green)", background: "#fff", color: "var(--green)", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>{L.markPaid}</button>
         )}
       </div>
     </div>

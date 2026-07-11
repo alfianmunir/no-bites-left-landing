@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { isAdminSession } from "@/lib/adminAuth";
 import { opsEnabled, listSalesOrders, reconcileWebsiteFinance, type SalesOrderRow } from "@/lib/opsStore";
+import { OPS_STR, opsLangFromCookie } from "@/lib/opsI18n";
 import { logOrder } from "@/lib/log";
 import { OpsShell, DbNotice, qty } from "../OpsChrome";
 import BoardOrderLine from "./BoardOrderLine";
@@ -36,9 +38,12 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: str
 export default async function OpsBoardPage() {
   if (!(await isAdminSession())) redirect("/admin/login");
 
+  const lang = opsLangFromCookie((await cookies()).get("ops_lang")?.value);
+  const L = OPS_STR[lang];
+
   if (!opsEnabled) {
     return (
-      <OpsShell active="/admin/ops/board" title="Order board">
+      <OpsShell active="/admin/ops/board" title={L.boardTitle}>
         <DbNotice />
       </OpsShell>
     );
@@ -63,28 +68,30 @@ export default async function OpsBoardPage() {
   const pickupGroups = ["Overdue", "Today", "Tomorrow", "Upcoming"].map((g) => ({ g, list: pickups.filter((o) => pickBucket(o) === g) })).filter((x) => x.list.length > 0);
 
   const pickupsToday = pickups.filter((o) => o.pickupDate === today).length;
-  const subtitle = `${active.length} open · ${byStage("preparing").length} preparing`;
+  const subtitle = `${active.length} ${L.open} · ${byStage("preparing").length} ${L.stPreparing.toLowerCase()}`;
+  const bkLabel: Record<string, string> = { Overdue: L.bkOverdue, Today: L.bkToday, Tomorrow: L.bkTomorrow, Upcoming: L.bkUpcoming };
+  const stageLabel: Record<string, string> = { preparing: L.stPreparing, packed: L.stPacked, ready_for_pickup: L.stReady, in_delivery: L.stDelivery, delivered: L.stDelivered };
 
   return (
-    <OpsShell active="/admin/ops/board" title="Order board" subtitle={subtitle}>
+    <OpsShell active="/admin/ops/board" title={L.boardTitle} subtitle={subtitle}>
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         {/* Snapshot */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-          <Stat label="Open orders" value={String(active.length)} />
-          <Stat label="Preparing" value={String(byStage("preparing").length)} tone="var(--orange)" />
-          <Stat label="Packed" value={String(byStage("packed").length)} tone="var(--blue)" />
-          <Stat label="Pickups today" value={String(pickupsToday)} tone={pickupsToday ? "var(--choco)" : "var(--ink)"} />
+          <Stat label={L.openOrders} value={String(active.length)} />
+          <Stat label={L.stPreparing} value={String(byStage("preparing").length)} tone="var(--orange)" />
+          <Stat label={L.stPacked} value={String(byStage("packed").length)} tone="var(--blue)" />
+          <Stat label={L.pickupsToday} value={String(pickupsToday)} tone={pickupsToday ? "var(--choco)" : "var(--ink)"} />
         </div>
 
         {/* Pickups by day */}
         {pickupGroups.length > 0 && (
           <div>
-            <div style={sectionLabel}>PICKUPS</div>
+            <div style={sectionLabel}>{L.pickupsLabel}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {pickupGroups.map(({ g, list }) => (
                 <div key={g} style={{ ...card, borderColor: g === "Overdue" ? "var(--red)" : g === "Today" ? "var(--choco)" : "var(--line)" }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 900, color: g === "Overdue" ? "var(--red)" : "var(--choco)" }}>{g} <span style={{ color: "var(--soft)", fontWeight: 700 }}>· {list.length}</span></div>
-                  {list.map((o) => <BoardOrderLine key={o.id} o={o} itemsLine={itemsSummary(o.items)} />)}
+                  <div style={{ fontSize: 12.5, fontWeight: 900, color: g === "Overdue" ? "var(--red)" : "var(--choco)" }}>{bkLabel[g]} <span style={{ color: "var(--soft)", fontWeight: 700 }}>· {list.length}</span></div>
+                  {list.map((o) => <BoardOrderLine key={o.id} o={o} itemsLine={itemsSummary(o.items)} lang={lang} />)}
                 </div>
               ))}
             </div>
@@ -93,17 +100,17 @@ export default async function OpsBoardPage() {
 
         {/* Stage board */}
         <div>
-          <div style={sectionLabel}>BY STAGE</div>
+          <div style={sectionLabel}>{L.byStage}</div>
           {active.length === 0 ? (
-            <div style={{ ...card, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No open orders — all caught up. 🎉</div>
+            <div style={{ ...card, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>{L.boardEmpty}</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {STAGES.filter((s) => s.key !== "delivered").map((s) => {
                 const list = byStage(s.key);
                 return (
                   <div key={s.key} style={{ ...card, borderLeft: `4px solid ${s.color}` }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 900, color: "var(--ink)" }}>{s.label} <span style={{ color: "var(--soft)", fontWeight: 700 }}>· {list.length}</span></div>
-                    {list.length === 0 ? <div style={{ fontSize: 12, color: "var(--soft)", marginTop: 4 }}>—</div> : list.map((o) => <BoardOrderLine key={o.id} o={o} itemsLine={itemsSummary(o.items)} />)}
+                    <div style={{ fontSize: 12.5, fontWeight: 900, color: "var(--ink)" }}>{stageLabel[s.key]} <span style={{ color: "var(--soft)", fontWeight: 700 }}>· {list.length}</span></div>
+                    {list.length === 0 ? <div style={{ fontSize: 12, color: "var(--soft)", marginTop: 4 }}>—</div> : list.map((o) => <BoardOrderLine key={o.id} o={o} itemsLine={itemsSummary(o.items)} lang={lang} />)}
                   </div>
                 );
               })}
@@ -112,7 +119,7 @@ export default async function OpsBoardPage() {
         </div>
 
         <Link href="/admin/ops/orders" style={{ alignSelf: "flex-start", fontSize: 13, fontWeight: 800, color: "var(--choco)", textDecoration: "none" }}>
-          Record / edit orders →
+          {L.recordEdit} →
         </Link>
       </div>
     </OpsShell>
