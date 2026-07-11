@@ -22,7 +22,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!(await isAdminSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!opsEnabled) return NextResponse.json({ error: "Ops requires a database connection (DATABASE_URL)." }, { status: 503 });
 
-  let body: { action?: string; id?: string; code?: string; name?: string; type?: string; monthlyBudget?: unknown };
+  let body: { action?: string; id?: string; code?: string; name?: string; type?: string; monthlyBudget?: unknown; countInkind?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -48,8 +48,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
         const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined;
         const budget = parseBudget(body.monthlyBudget);
-        if (name === undefined && budget === undefined) return NextResponse.json({ error: "nothing to update" }, { status: 400 });
-        await updateExpenseCategory(id, { name, monthlyBudget: budget });
+        const countInkind = typeof body.countInkind === "boolean" ? body.countInkind : undefined;
+        if (name === undefined && budget === undefined && countInkind === undefined) return NextResponse.json({ error: "nothing to update" }, { status: 400 });
+        await updateExpenseCategory(id, { name, monthlyBudget: budget, countInkind });
         logOrder("ops_budget_update", { id });
         return NextResponse.json({ ok: true });
       }
