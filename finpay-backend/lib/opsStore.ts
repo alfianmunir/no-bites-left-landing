@@ -647,19 +647,61 @@ export async function receivePurchase(input: {
   }
 }
 
-/** Stock opname: posts the counted-vs-system variance as an opname_adj move. Returns the diff (counted − system). */
+/** Stock opname (ingredients/packaging): posts the counted-vs-system variance as
+ *  an opname_adj move. Returns the diff (counted − system). */
 export async function postOpname(itemId: string, countedQty: number, note: string | null): Promise<number> {
   const p = await pool();
   const { rows } = await p.query(`SELECT ops.post_opname($1, $2, $3) AS variance`, [itemId, countedQty, note || null]);
   return num(rows[0].variance);
 }
 
+/** Finished-goods opname: posts the counted-vs-system variance on the product
+ *  side of the ledger (valued at moving-average made-cost). Returns the diff. */
+export async function postProductOpname(productId: string, countedQty: number, note: string | null): Promise<number> {
+  const p = await pool();
+  const { rows } = await p.query(`SELECT ops.post_product_opname($1, $2, $3) AS variance`, [productId, countedQty, note || null]);
+  return num(rows[0].variance);
+}
+
+export interface ProductOpnameChoice {
+  productId: string;
+  sku: string;
+  name: string;
+  variant: string | null;
+  qtyOnHand: number; // system finished-goods on hand
+}
+
+/** Finished-goods products for the opname picker — SKU + name, with the current
+ *  system on-hand from the product ledger. Every active product (even zero on
+ *  hand, so a surplus can be counted in), SKU-ordered. */
+export async function listProductOpnameChoices(): Promise<ProductOpnameChoice[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT pr.id, pr.sku, pr.name, pr.variant,
+            COALESCE(sm.on_hand, 0) AS qty_on_hand
+       FROM ops.products pr
+       LEFT JOIN (SELECT product_id, sum(qty) AS on_hand FROM ops.stock_moves WHERE product_id IS NOT NULL GROUP BY product_id) sm
+              ON sm.product_id = pr.id
+      WHERE pr.active AND NOT pr.is_bundle
+      ORDER BY pr.sku ASC, pr.name ASC`,
+  );
+  return rows.map((r) => ({
+    productId: r.id as string,
+    sku: (r.sku as string) ?? "",
+    name: r.name as string,
+    variant: (r.variant as string) ?? null,
+    qtyOnHand: num(r.qty_on_hand),
+  }));
+}
+
 export type OpnameCategory = "surplus" | "loss" | "equal";
+export type OpnameKind = "item" | "product";
 
 export interface OpnameAdjRow {
   id: string;
   name: string;
   unit: string;
+  kind: OpnameKind; // item = ingredient/packaging, product = finished goods
   qty: number; // signed: + surplus, − loss, 0 equal
   unitCost: number;
   value: number; // qty * unitCost (signed)
@@ -668,20 +710,29 @@ export interface OpnameAdjRow {
   at: string;
 }
 
-/** All opname adjustments (surplus / loss / equal), newest first. Reads the
- *  opname_adj moves tagged ref_type='opname' (excludes batch-cancel reversals,
- *  which reuse the opname_adj reason). qty>0 surplus, <0 loss, 0 equal (matched). */
+/** All opname adjustments (surplus / loss / equal), newest first — both item
+ *  counts (ref_type='opname') AND finished-goods counts (ref_type='product_opname'),
+ *  tagged with `kind`. Excludes batch-cancel reversals, which reuse the opname_adj
+ *  reason. qty>0 surplus, <0 loss, 0 equal (matched). Honours the opname_since cutoff. */
 export async function listOpnameAdjustments(limit = 100): Promise<OpnameAdjRow[]> {
   const p = await pool();
   const { rows } = await p.query(
-    `SELECT sm.id, i.name, i.unit, sm.qty, COALESCE(sm.unit_cost, 0) AS unit_cost, sm.note, sm.created_at
-       FROM ops.stock_moves sm
-       JOIN ops.items i ON i.id = sm.item_id
-      WHERE sm.reason = 'opname_adj' AND sm.ref_type = 'opname'
-        AND sm.created_at >= COALESCE(
+    `SELECT u.id, u.name, u.unit, u.kind, u.qty, u.unit_cost, u.note, u.created_at
+       FROM (
+         SELECT sm.id, i.name, i.unit, 'item' AS kind, sm.qty,
+                COALESCE(sm.unit_cost, 0) AS unit_cost, sm.note, sm.created_at
+           FROM ops.stock_moves sm JOIN ops.items i ON i.id = sm.item_id
+          WHERE sm.reason = 'opname_adj' AND sm.ref_type = 'opname'
+         UNION ALL
+         SELECT sm.id, pr.name, 'pcs' AS unit, 'product' AS kind, sm.qty,
+                COALESCE(sm.unit_cost, 0) AS unit_cost, sm.note, sm.created_at
+           FROM ops.stock_moves sm JOIN ops.products pr ON pr.id = sm.product_id
+          WHERE sm.reason = 'opname_adj' AND sm.ref_type = 'product_opname'
+       ) u
+      WHERE u.created_at >= COALESCE(
               (SELECT (value #>> '{}')::timestamptz FROM ops.config WHERE key = 'opname_since'),
               '-infinity'::timestamptz)
-      ORDER BY sm.created_at DESC
+      ORDER BY u.created_at DESC
       LIMIT $1`,
     [limit],
   );
@@ -690,9 +741,10 @@ export async function listOpnameAdjustments(limit = 100): Promise<OpnameAdjRow[]
     const unitCost = num(r.unit_cost);
     const category: OpnameCategory = qty > 0 ? "surplus" : qty < 0 ? "loss" : "equal";
     return {
-      id: r.id as string,
+      id: String(r.id),
       name: r.name as string,
       unit: r.unit as string,
+      kind: r.kind as OpnameKind,
       qty,
       unitCost,
       value: qty * unitCost,
