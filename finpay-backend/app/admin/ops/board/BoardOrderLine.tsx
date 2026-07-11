@@ -10,6 +10,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { SalesOrderRow } from "@/lib/opsStore";
+import { OPS_STR, type OpsLang } from "@/lib/opsI18n";
 
 const STAGE: Record<string, { label: string; color: string }> = {
   preparing: { label: "Preparing", color: "var(--orange)" },
@@ -20,9 +21,11 @@ const STAGE: Record<string, { label: string; color: string }> = {
 };
 const CH_NEXT: Record<string, string> = { preparing: "packed", packed: "in_delivery", in_delivery: "delivered" };
 
-export default function BoardOrderLine({ o, itemsLine }: { o: SalesOrderRow; itemsLine: string }) {
+export default function BoardOrderLine({ o, itemsLine, lang }: { o: SalesOrderRow; itemsLine: string; lang: OpsLang }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const L = OPS_STR[lang];
+  const stageLbl: Record<string, string> = { preparing: L.stPreparing, packed: L.stPacked, ready_for_pickup: L.stReady, in_delivery: L.stDelivery, delivered: L.stDelivered };
   const st = STAGE[o.fulfillmentStatus];
   const isWebsite = o.channel === "website";
   const next = CH_NEXT[o.fulfillmentStatus];
@@ -48,16 +51,16 @@ export default function BoardOrderLine({ o, itemsLine }: { o: SalesOrderRow; ite
       <div style={{ minWidth: 150, flex: 1 }}>
         <div style={{ fontSize: 13, fontWeight: 700 }}>
           {isWebsite ? "🛍 " : ""}{o.customerRef || "—"} <span style={{ color: "var(--soft)", fontWeight: 600, fontSize: 11.5 }}>· {o.channel}</span>
-          {o.paymentStatus === "unpaid" && o.channel !== "b2b" && <span style={{ color: "var(--orange)", fontWeight: 800, fontSize: 11 }}> · unpaid</span>}
+          {o.paymentStatus === "unpaid" && o.channel !== "b2b" && <span style={{ color: "var(--orange)", fontWeight: 800, fontSize: 11 }}> · {L.unpaid.toLowerCase()}</span>}
         </div>
         {itemsLine && <div style={{ fontSize: 12, color: "var(--soft)" }}>{itemsLine}</div>}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
         {o.pickupDate && <span style={{ fontSize: 11.5, fontWeight: 800, color: "var(--choco)" }}>🛍 {o.pickupDate}</span>}
-        <span style={{ fontSize: 10.5, fontWeight: 800, color: "#fff", background: st?.color ?? "var(--soft)", borderRadius: 999, padding: "2px 8px" }}>{st?.label ?? o.fulfillmentStatus}</span>
+        <span style={{ fontSize: 10.5, fontWeight: 800, color: "#fff", background: st?.color ?? "var(--soft)", borderRadius: 999, padding: "2px 8px" }}>{stageLbl[o.fulfillmentStatus] ?? o.fulfillmentStatus}</span>
         {canAdvance && (
           <button onClick={advance} disabled={busy} style={{ padding: "5px 10px", borderRadius: 999, border: "1.5px solid var(--line)", background: "var(--surface2)", color: "var(--choco)", fontWeight: 800, fontSize: 11, cursor: busy ? "default" : "pointer" }}>
-            → {STAGE[next].label}
+            → {stageLbl[next] ?? STAGE[next].label}
           </button>
         )}
       </div>

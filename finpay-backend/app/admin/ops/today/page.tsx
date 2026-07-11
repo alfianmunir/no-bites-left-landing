@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { getOpsSession } from "@/lib/adminAuth";
+import { OPS_STR, opsLangFromCookie } from "@/lib/opsI18n";
 import {
   opsEnabled,
   getCashPosition,
@@ -55,9 +57,11 @@ export default async function OpsTodayPage() {
   const session = await getOpsSession();
   if (!session) redirect("/admin/login");
 
+  const L = OPS_STR[opsLangFromCookie((await cookies()).get("ops_lang")?.value)];
+
   if (!opsEnabled) {
     return (
-      <OpsShell active="/admin/ops/today" title="Today">
+      <OpsShell active="/admin/ops/today" title={L.todayTitle}>
         <DbNotice />
       </OpsShell>
     );
@@ -70,7 +74,7 @@ export default async function OpsTodayPage() {
   if (session.role === "staff" && session.staffId) {
     const att = await getStaffMonthAttendance(session.staffId, month.start, month.end, today);
     return (
-      <OpsShell active="/admin/ops/today" title="Today" subtitle={month.label}>
+      <OpsShell active="/admin/ops/today" title={L.todayTitle} subtitle={month.label}>
         <StaffToday name={att.name} daysThisMonth={att.daysThisMonth} loggedToday={att.loggedToday} todayLabel={today} />
       </OpsShell>
     );
@@ -112,24 +116,24 @@ export default async function OpsTodayPage() {
   const floorPct = (cfg.marginFloor * 100).toFixed(0);
 
   return (
-    <OpsShell active="/admin/ops/today" title="Today" subtitle={month.label}>
+    <OpsShell active="/admin/ops/today" title={L.todayTitle} subtitle={month.label}>
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         {/* 1. KPI grid — money at a glance */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(195px, 1fr))", gap: 12 }}>
-          <Stat label="Cash position" value={rupiah(cash.total)} tone={cash.total < 0 ? "var(--red)" : "var(--ink)"} />
-          <Stat label="Revenue (mo)" value={rupiah(pnl.revenue)} />
-          <Stat label="Gross profit (mo)" value={rupiah(pnl.grossProfit)} tone={pnl.grossProfit < 0 ? "var(--red)" : "var(--green)"} />
-          <Stat label="Operating profit (mo)" value={rupiah(pnl.operatingProfit)} tone={pnl.operatingProfit < 0 ? "var(--red)" : "var(--green)"} />
+          <Stat label={L.cash} value={rupiah(cash.total)} tone={cash.total < 0 ? "var(--red)" : "var(--ink)"} />
+          <Stat label={L.revenue} value={rupiah(pnl.revenue)} />
+          <Stat label={L.grossP} value={rupiah(pnl.grossProfit)} tone={pnl.grossProfit < 0 ? "var(--red)" : "var(--green)"} />
+          <Stat label={L.opP} value={rupiah(pnl.operatingProfit)} tone={pnl.operatingProfit < 0 ? "var(--red)" : "var(--green)"} />
         </div>
 
         {/* 2. Guardrails & alerts */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 900, color: "var(--soft)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
-            Guardrails &amp; alerts <span style={{ color: "var(--red)" }}>· {alertCount}</span>
+            {L.guardrails} <span style={{ color: "var(--red)" }}>· {alertCount}</span>
           </div>
 
           {alertCount === 0 ? (
-            <div style={{ ...card, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>All clear — no alerts. 🎉</div>
+            <div style={{ ...card, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>{L.allClear}</div>
           ) : (
             <>
               {/* 3. Money-critical rows: website→finance drift + overdue invoices. */}
@@ -137,13 +141,13 @@ export default async function OpsTodayPage() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {drift.map((d) => (
                     <Link key={`drift-${d.orderId}`} href="/admin/ops/orders" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "11px 14px", background: "#fff", border: "1.5px solid var(--red)", borderRadius: 12, textDecoration: "none", color: "var(--ink)", fontSize: 13, fontWeight: 700 }}>
-                      <span>Website order {d.customerName} paid but not in finance — {rupiah(d.amount)}</span>
+                      <span>{L.driftRow(d.customerName, rupiah(d.amount))}</span>
                       <span style={{ color: "var(--soft)" }} aria-hidden>›</span>
                     </Link>
                   ))}
                   {overdue.map((i) => (
                     <Link key={`inv-${i.id}`} href="/admin/ops/orders" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "11px 14px", background: "#fff", border: `1.5px solid ${AMBER}`, borderRadius: 12, textDecoration: "none", color: "var(--ink)", fontSize: 13, fontWeight: 700 }}>
-                      <span>Invoice overdue — {i.customerRef ?? i.number ?? "B2B"} {rupiah(i.amount)}</span>
+                      <span>{L.overdueRow(i.customerRef ?? i.number ?? "B2B", rupiah(i.amount))}</span>
                       <span style={{ color: "var(--soft)" }} aria-hidden>›</span>
                     </Link>
                   ))}
@@ -154,11 +158,11 @@ export default async function OpsTodayPage() {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))", gap: 12 }}>
                 {reorder.length > 0 && (
                   <AlertCard
-                    title="Reorder needed"
+                    title={L.reorderTitle}
                     border="rgba(226,64,38,0.35)"
                     actions={<>
-                      <Link href="/admin/ops/receive" style={pillSolid}>Create purchase order</Link>
-                      <Link href="/admin/ops/stock" style={pillGhost}>Open Stock</Link>
+                      <Link href="/admin/ops/receive" style={pillSolid}>{L.createPO}</Link>
+                      <Link href="/admin/ops/stock" style={pillGhost}>{L.openStock}</Link>
                     </>}
                   >
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -173,22 +177,22 @@ export default async function OpsTodayPage() {
 
                 {worstMargin && (
                   <AlertCard
-                    title="Margin below floor"
+                    title={L.marginTitle}
                     border={AMBER}
-                    actions={<Link href="/admin/ops/pricing" style={pillSolid}>Review pricing</Link>}
+                    actions={<Link href="/admin/ops/pricing" style={pillSolid}>{L.reviewPricing}</Link>}
                   >
-                    {worstMargin.name} margin is {(worstMargin.margin * 100).toFixed(1)}% — the floor is {floorPct}%. Raising the price to {rupiah(worstMargin.floorPrice)} clears it.
-                    {belowFloor.length > 1 && <span style={{ color: "var(--soft)" }}> +{belowFloor.length - 1} more below floor.</span>}
+                    {L.marginBody(worstMargin.name, `${(worstMargin.margin * 100).toFixed(1)}%`, `${floorPct}%`, rupiah(worstMargin.floorPrice))}
+                    {belowFloor.length > 1 && <span style={{ color: "var(--soft)" }}>{L.marginMore(belowFloor.length - 1)}</span>}
                   </AlertCard>
                 )}
 
                 {soonestExpiring && (
                   <AlertCard
-                    title="Expiring soon"
+                    title={L.expiryTitle}
                     border={AMBER}
-                    actions={<Link href="/admin/ops/production" style={pillSolid}>Plan a bake</Link>}
+                    actions={<Link href="/admin/ops/production" style={pillSolid}>{L.planBake}</Link>}
                   >
-                    {soonestExpiring.item} — {soonestExpiring.daysLeft < 0 ? "expired" : `${soonestExpiring.daysLeft} day${soonestExpiring.daysLeft === 1 ? "" : "s"} left`}. A bake would use it up before it turns.
+                    {L.expiryBody(soonestExpiring.item, soonestExpiring.daysLeft < 0 ? L.expiredWord : L.daysLeft(soonestExpiring.daysLeft))}
                   </AlertCard>
                 )}
               </div>
@@ -198,18 +202,16 @@ export default async function OpsTodayPage() {
 
         {/* 5. Prep banner → Board */}
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 18px", background: "var(--choco)", borderRadius: 16, color: "var(--on-dark)" }}>
-          <div style={{ fontSize: 14, fontWeight: 800 }}>
-            {preparingCount} order{preparingCount === 1 ? "" : "s"} in preparing · {pickupsToday} pickup{pickupsToday === 1 ? "" : "s"} today
-          </div>
-          <Link href="/admin/ops/board" style={{ padding: "9px 16px", borderRadius: 999, background: "var(--orange)", color: "#241503", fontSize: 13, fontWeight: 900, textDecoration: "none" }}>Open board</Link>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>{L.prepBanner(preparingCount, pickupsToday)}</div>
+          <Link href="/admin/ops/board" style={{ padding: "9px 16px", borderRadius: 999, background: "var(--orange)", color: "#241503", fontSize: 13, fontWeight: 900, textDecoration: "none" }}>{L.openBoard}</Link>
         </div>
 
         {/* 6. Operational counts */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
-          <Stat label="Open batches" value={String(batches.length)} />
-          <Stat label="Low stock items" value={String(reorder.length)} tone={reorder.length ? "var(--red)" : "var(--ink)"} />
-          <Stat label="AR outstanding" value={rupiah(arTotal)} tone={overdue.length ? AMBER : "var(--ink)"} />
-          <Stat label="Waste (30d)" value={rupiah(wasteValue)} tone={wasteValue ? "var(--red)" : "var(--ink)"} />
+          <Stat label={L.openBatches} value={String(batches.length)} />
+          <Stat label={L.lowStock} value={String(reorder.length)} tone={reorder.length ? "var(--red)" : "var(--ink)"} />
+          <Stat label={L.ar} value={rupiah(arTotal)} tone={overdue.length ? AMBER : "var(--ink)"} />
+          <Stat label={L.waste30} value={rupiah(wasteValue)} tone={wasteValue ? "var(--red)" : "var(--ink)"} />
         </div>
       </div>
     </OpsShell>

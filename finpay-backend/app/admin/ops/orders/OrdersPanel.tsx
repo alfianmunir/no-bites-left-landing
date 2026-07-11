@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { computeEconomics, formatPct } from "@/lib/opsOrderMath";
 import type { ChannelRow, PricingProductRow, PrepItemRow } from "@/lib/opsStore";
+import { OPS_STR, type OpsLang } from "@/lib/opsI18n";
 
 function rupiah(n: number): string {
   return "Rp " + Math.round(n).toLocaleString("id-ID");
@@ -29,8 +30,9 @@ let nextKey = 1;
 const blankLine = (): LineDraft => ({ key: nextKey++, productId: "", qty: "1", unitPrice: "" });
 
 // ---------------------------------------------------------------- Quick entry
-export function OrderEntry({ channels, products }: { channels: ChannelRow[]; products: PricingProductRow[] }) {
+export function OrderEntry({ channels, products, lang }: { channels: ChannelRow[]; products: PricingProductRow[]; lang: OpsLang }) {
   const router = useRouter();
+  const L = OPS_STR[lang];
   const [channelId, setChannelId] = useState(channels[0]?.id ?? "");
   const [customerRef, setCustomerRef] = useState("");
   const [orderedAt, setOrderedAt] = useState(new Date().toISOString().slice(0, 10));
@@ -78,7 +80,7 @@ export function OrderEntry({ channels, products }: { channels: ChannelRow[]; pro
       const data = await res.json();
       if (!res.ok) setError(data.error ?? "Could not record the order.");
       else {
-        setDone(isB2B ? "Order recorded + invoice raised." : isCanteen ? "Canteen order recorded — paid & delivered." : "Order recorded.");
+        setDone(isB2B ? L.doneB2B : isCanteen ? L.doneCanteen : L.doneOrder);
         setLines([blankLine()]);
         setCustomerRef("");
         router.refresh();
@@ -92,7 +94,7 @@ export function OrderEntry({ channels, products }: { channels: ChannelRow[]; pro
 
   return (
     <div style={{ ...card, display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>New order</div>
+      <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>{L.newOrderTitle}</div>
 
       {done && (
         <div style={{ padding: "10px 14px", background: "var(--tint-success)", border: "1.5px solid var(--green)", borderRadius: 12, fontSize: 13.5, color: "var(--ink)", fontWeight: 700 }}>✓ {done}</div>
@@ -100,7 +102,7 @@ export function OrderEntry({ channels, products }: { channels: ChannelRow[]; pro
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
         <div>
-          <label style={labelStyle}>Channel</label>
+          <label style={labelStyle}>{L.channel}</label>
           <select style={inputStyle} value={channelId} onChange={(e) => setChannelId(e.target.value)}>
             {channels.map((c) => (
               <option key={c.id} value={c.id}>{c.name}{c.feePct > 0 ? ` · ${(c.feePct * 100).toFixed(0)}%` : ""}</option>
@@ -108,71 +110,72 @@ export function OrderEntry({ channels, products }: { channels: ChannelRow[]; pro
           </select>
         </div>
         <div>
-          <label style={labelStyle}>{isB2B ? "Partner / cafe" : "Customer"}</label>
-          <input style={inputStyle} value={customerRef} onChange={(e) => setCustomerRef(e.target.value)} placeholder="name / ref" />
+          <label style={labelStyle}>{isB2B ? L.partner : L.customer}</label>
+          <input style={inputStyle} value={customerRef} onChange={(e) => setCustomerRef(e.target.value)} placeholder={L.custPh} />
         </div>
         <div>
-          <label style={labelStyle}>Order date</label>
+          <label style={labelStyle}>{L.orderDate}</label>
           <input type="date" style={inputStyle} value={orderedAt} onChange={(e) => setOrderedAt(e.target.value)} />
         </div>
       </div>
 
       {isCanteen && (
-        <div style={{ fontSize: 12, color: "var(--soft)", fontWeight: 600, marginTop: -4 }}>Canteen orders are recorded as <strong>paid</strong> and <strong>delivered</strong> right away.</div>
+        <div style={{ fontSize: 12, color: "var(--soft)", fontWeight: 600, marginTop: -4 }}>{L.canteenNote}</div>
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <label style={labelStyle}>Items</label>
+        <label style={labelStyle}>{L.itemsL}</label>
         {lines.map((l) => {
           const p = productById.get(l.productId);
           return (
             <div key={l.key} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.6fr 0.9fr auto", gap: 8, alignItems: "center" }}>
               <select style={inputStyle} value={l.productId} onChange={(e) => pickProduct(l.key, e.target.value)}>
-                <option value="">— product —</option>
+                <option value="">{L.productPh}</option>
                 {products.map((p) => (
                   <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>
                 ))}
               </select>
               <input type="number" inputMode="numeric" min="0" style={inputStyle} value={l.qty} onChange={(e) => setLine(l.key, { qty: e.target.value })} aria-label="qty" />
-              <input type="number" inputMode="numeric" min="0" style={inputStyle} value={l.unitPrice} onChange={(e) => setLine(l.key, { unitPrice: e.target.value })} placeholder={p ? String(Math.round(p.listPrice)) : "price"} aria-label="unit price" />
+              <input type="number" inputMode="numeric" min="0" style={inputStyle} value={l.unitPrice} onChange={(e) => setLine(l.key, { unitPrice: e.target.value })} placeholder={p ? String(Math.round(p.listPrice)) : L.pricePh} aria-label="unit price" />
               {lines.length > 1 ? (
                 <button onClick={() => removeLine(l.key)} aria-label="remove" style={{ border: "none", background: "transparent", color: "var(--red)", fontSize: 17, cursor: "pointer" }}>🗑</button>
               ) : <span style={{ width: 17 }} />}
             </div>
           );
         })}
-        <button onClick={addLine} style={{ alignSelf: "flex-start", padding: "7px 13px", borderRadius: 999, border: "1.5px dashed var(--line)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>+ Add item</button>
+        <button onClick={addLine} style={{ alignSelf: "flex-start", padding: "7px 13px", borderRadius: 999, border: "1.5px dashed var(--line)", background: "#fff", color: "var(--choco)", fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}>{L.addItem}</button>
       </div>
 
       {/* Live economics */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 18px", fontSize: 13, color: "var(--soft)", borderTop: "1px solid var(--line)", paddingTop: 12 }}>
-        <span>Gross <strong style={{ color: "var(--ink)" }}>{rupiah(econ.gross)}</strong></span>
-        {econ.fee > 0 && <span>Fee <strong style={{ color: "var(--red)" }}>−{rupiah(econ.fee)}</strong></span>}
-        <span>COGS <strong style={{ color: "var(--ink)" }}>{rupiah(econ.cogs)}</strong></span>
-        <span>Net <strong style={{ color: "var(--ink)" }}>{rupiah(econ.net)}</strong></span>
-        <span>Margin <strong style={{ color: econ.marginPct < 0.3 && econ.gross > 0 ? "var(--red)" : "var(--green)" }}>{formatPct(econ.marginPct)}</strong></span>
+        <span>{L.gross} <strong style={{ color: "var(--ink)" }}>{rupiah(econ.gross)}</strong></span>
+        {econ.fee > 0 && <span>{L.fee} <strong style={{ color: "var(--red)" }}>−{rupiah(econ.fee)}</strong></span>}
+        <span>{L.cogs} <strong style={{ color: "var(--ink)" }}>{rupiah(econ.cogs)}</strong></span>
+        <span>{L.net} <strong style={{ color: "var(--ink)" }}>{rupiah(econ.net)}</strong></span>
+        <span>{L.margin} <strong style={{ color: econ.marginPct < 0.3 && econ.gross > 0 ? "var(--red)" : "var(--green)" }}>{formatPct(econ.marginPct)}</strong></span>
       </div>
 
       {error && <div style={{ color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
 
       <button onClick={submit} disabled={busy} style={{ alignSelf: "flex-start", padding: "12px 22px", borderRadius: 12, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 14.5, cursor: busy ? "default" : "pointer" }}>
-        {busy ? "Saving…" : isB2B ? "Record order + invoice" : "Record order"}
+        {busy ? L.saving : isB2B ? L.recordB2B : L.record}
       </button>
     </div>
   );
 }
 
 // ---------------------------------------------------------------- Prep list
-export function PrepList({ prep }: { prep: PrepItemRow[] }) {
+export function PrepList({ prep, lang }: { prep: PrepItemRow[]; lang: OpsLang }) {
+  const L = OPS_STR[lang];
   const totalUnits = prep.reduce((s, p) => s + p.qty, 0);
   return (
     <div style={{ ...card, borderColor: "var(--orange)", background: "var(--tint-amber)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-        <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>🧑‍🍳 To prepare</div>
-        <div style={{ fontSize: 12, color: "var(--soft)", fontWeight: 700 }}>{qtyFmt(totalUnits)} units across preparing orders</div>
+        <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>{L.toPrepare}</div>
+        <div style={{ fontSize: 12, color: "var(--soft)", fontWeight: 700 }}>{qtyFmt(totalUnits)} {L.unitsAcross}</div>
       </div>
       {prep.length === 0 ? (
-        <div style={{ fontSize: 13.5, color: "var(--soft)" }}>Nothing in preparing — all caught up. 🎉</div>
+        <div style={{ fontSize: 13.5, color: "var(--soft)" }}>{L.prepEmpty}</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {prep.map((p) => (
