@@ -93,6 +93,7 @@ export interface StatusEvent {
   status: OrderStatus;
   at: string; // ISO timestamp
   by: StatusActor;
+  note?: string; // e.g. the cancellation reason on a CANCELLED/REFUNDED event
 }
 
 export interface OrderItem {
@@ -187,9 +188,12 @@ export interface PublicOrder {
   expiry_link: string | null;
   created_at: string;
   updated_at: string;
+  cancel_reason: string | null; // reason from the CANCELLED/REFUNDED status event
 }
 
 export function publicOrderView(o: Order): PublicOrder {
+  // Surface the cancellation reason (if any) from the most recent terminal event.
+  const term = [...(o.status_history ?? [])].reverse().find((e) => (e.status === "REFUNDED" || e.status === "CANCELLED") && e.note);
   return {
     id: o.id,
     status: o.status,
@@ -201,5 +205,6 @@ export function publicOrderView(o: Order): PublicOrder {
     expiry_link: o.expiry_link,
     created_at: o.created_at,
     updated_at: o.updated_at,
+    cancel_reason: term?.note ?? null,
   };
 }

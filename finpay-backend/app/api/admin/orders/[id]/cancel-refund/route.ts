@@ -45,7 +45,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: `cannot cancel an order in ${order.status}` }, { status: 400 });
   }
 
-  const updated = await store.setStatus(id, "REFUNDED", "admin");
+  const updated = await store.setStatus(id, "REFUNDED", "admin", reason);
 
   // Reverse the finance side (returns stock, reverses the website cash-in) so the
   // ledger + P&L drop the sale. Idempotent; guarded so a hiccup never blocks the

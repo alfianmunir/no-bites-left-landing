@@ -135,9 +135,9 @@ function ItemsSummary({ order }: { order: PublicOrder }) {
 }
 
 const TERMINAL_COPY: Record<string, { icon: string; title: string; blurb: string }> = {
-  EXPIRED: { icon: "⏱", title: "Expired", blurb: "Payment window closed — order auto-cancelled" },
-  CANCELLED: { icon: "✕", title: "Cancelled", blurb: "You cancelled this order" },
-  REFUNDED: { icon: "⏩", title: "Refunded", blurb: `Refunded to your original payment method` },
+  EXPIRED: { icon: "⏱", title: "Expired", blurb: "The payment window closed, so this order was auto-cancelled." },
+  CANCELLED: { icon: "✕", title: "Cancelled", blurb: "This order was cancelled." },
+  REFUNDED: { icon: "✕", title: "Cancelled – refund", blurb: "Your order was cancelled, and the refund process will be followed up via WhatsApp." },
 };
 
 const ACTIVE_PICKUP: OrderStatus[] = ["PAID", "BAKING", "READY_FOR_PICKUP"];
@@ -266,11 +266,15 @@ export default function OrderStatusView({ order, from }: { order: PublicOrder; f
               </div>
               <div>
                 <div style={{ fontWeight: 800, fontSize: 13.5 }}>{TERMINAL_COPY[order.status].title}</div>
-                <div style={{ fontSize: 12, color: "var(--soft)" }}>
-                  {order.status === "REFUNDED" ? `${rupiah(order.amount)} refunded to your original payment method` : TERMINAL_COPY[order.status].blurb}
-                </div>
+                <div style={{ fontSize: 12, color: "var(--soft)" }}>{TERMINAL_COPY[order.status].blurb}</div>
               </div>
             </div>
+            {order.cancel_reason && (
+              <div style={{ padding: "10px 12px", borderRadius: 12, background: "var(--surface)", border: "1.5px solid var(--line)" }}>
+                <div style={{ fontSize: 10.5, fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--soft)" }}>Cancellation note</div>
+                <div style={{ fontSize: 13, color: "var(--ink)", marginTop: 2 }}>{order.cancel_reason}</div>
+              </div>
+            )}
             <SupportLink />
           </>
         )}
