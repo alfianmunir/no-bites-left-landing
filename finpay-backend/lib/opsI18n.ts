@@ -22,7 +22,7 @@ const en = {
   scr: {
     stock: "Stock", ledger: "Ledger", items: "Items", receive: "Receive", opname: "Opname", waste: "Waste",
     recipes: "Recipes", batches: "Batches", board: "Board", orders: "Orders", bake: "Bake",
-    menu: "Menu", menulinks: "Menu links", money: "Money", pricing: "Pricing", forecast: "Forecast", team: "Team",
+    menu: "Menu", menulinks: "Menu links", money: "Money", pricing: "Pricing", forecast: "Forecast", team: "Team", pay: "My Pay",
   },
   // Today
   todayTitle: "Today",
@@ -90,7 +90,7 @@ const id: OpsStrings = {
   scr: {
     stock: "Stok", ledger: "Buku besar", items: "Item", receive: "Terima", opname: "Opname", waste: "Terbuang",
     recipes: "Resep", batches: "Batch", board: "Papan", orders: "Pesanan", bake: "Lembar produksi",
-    menu: "Menu", menulinks: "Tautan menu", money: "Uang", pricing: "Harga", forecast: "Prakiraan", team: "Tim",
+    menu: "Menu", menulinks: "Tautan menu", money: "Uang", pricing: "Harga", forecast: "Prakiraan", team: "Tim", pay: "Gaji Saya",
   },
   todayTitle: "Hari Ini",
   guardrails: "Pengaman & peringatan",

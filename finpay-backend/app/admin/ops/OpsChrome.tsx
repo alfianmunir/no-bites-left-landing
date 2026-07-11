@@ -88,7 +88,10 @@ const GROUPS: Group[] = [
     label: "HR",
     key: "hr",
     icon: "👥",
-    tabs: [{ href: "/admin/ops/team", label: "Team", k: "team" }],
+    tabs: [
+      { href: "/admin/ops/team", label: "Team", k: "team" },
+      { href: "/admin/ops/pay", label: "My Pay", k: "pay" },
+    ],
   },
 ];
 
@@ -111,6 +114,12 @@ const STAFF_GROUPS: Group[] = [
     key: "production",
     icon: "🥐",
     tabs: [{ href: "/admin/ops/production", label: "Batches", k: "batches" }],
+  },
+  {
+    label: "HR",
+    key: "hr",
+    icon: "👥",
+    tabs: [{ href: "/admin/ops/pay", label: "My Pay", k: "pay" }],
   },
 ];
 

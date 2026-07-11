@@ -46,9 +46,10 @@ const BUCKET_COLOR: Record<AgingBucket, string> = {
 // ============================================================ Overview
 function Overview({ position, pnl, monthLabel }: { position: CashPosition; pnl: PnL; monthLabel: string }) {
   const pnlRows: Array<{ k: string; v: number; strong?: boolean; muted?: boolean; neg?: boolean }> = [
-    { k: "Revenue (net of fees)", v: pnl.revenue },
+    { k: "Revenue (gross)", v: pnl.revenue },
     { k: "− COGS", v: -pnl.cogs, neg: true },
     { k: "Gross profit", v: pnl.grossProfit, strong: true },
+    { k: "− Channel / PG fees", v: -pnl.fees, neg: true },
     { k: "− Labor (non-prod)", v: -pnl.labor, neg: true },
     { k: "− Opex", v: -pnl.opex, neg: true },
     { k: "− Marketing", v: -pnl.marketing, neg: true },
@@ -598,7 +599,44 @@ function AssetItem({ asset }: { asset: AssetRow }) {
   );
 }
 
-function Assets({ assets }: { assets: AssetRow[] }) {
+/** Monthly close → post the period's depreciation as a non-cash opex row (H3).
+ *  Idempotent server-side: a second click reports it's already posted. */
+function DepreciationClose({ monthLabel, monthlyDep }: { monthLabel: string; monthlyDep: number }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const close = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const res = await fetch("/api/admin/ops/close", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const data = await res.json();
+      if (!res.ok) setMsg(data.error ?? "Could not post depreciation.");
+      else {
+        setMsg(data.posted ? `Posted ${rupiah(data.amount)} depreciation for ${monthLabel}.` : `Depreciation for ${monthLabel} is already posted.`);
+        router.refresh();
+      }
+    } catch {
+      setMsg("Request failed — check your connection.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ ...card, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+      <div style={{ fontSize: 13, color: "var(--soft)" }}>
+        Monthly close — post <strong style={{ color: "var(--ink)" }}>{rupiah(monthlyDep)}</strong> depreciation to the P&amp;L for {monthLabel} (non-cash).
+        {msg && <div style={{ color: "var(--choco)", fontWeight: 700, marginTop: 4 }}>{msg}</div>}
+      </div>
+      <button onClick={close} disabled={busy || monthlyDep <= 0} style={{ padding: "8px 14px", borderRadius: 999, border: "none", background: busy || monthlyDep <= 0 ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 800, fontSize: 12.5, cursor: busy || monthlyDep <= 0 ? "default" : "pointer", whiteSpace: "nowrap" }}>
+        {busy ? "Posting…" : "Post depreciation"}
+      </button>
+    </div>
+  );
+}
+
+function Assets({ assets, monthLabel }: { assets: AssetRow[]; monthLabel: string }) {
   const owned = assets.filter((a) => a.status === "owned");
   const monthlyDep = owned.reduce((s, a) => s + a.monthlyDepreciation, 0);
   const plannedCost = assets.filter((a) => a.status === "planned").reduce((s, a) => s + (a.purchaseCost ?? 0), 0);
@@ -609,6 +647,7 @@ function Assets({ assets }: { assets: AssetRow[] }) {
         <span>Monthly depreciation <strong style={{ color: "var(--ink)" }}>{rupiah(monthlyDep)}</strong></span>
         {plannedCost > 0 && <span>Planned capex <strong style={{ color: "var(--ink)" }}>{rupiah(plannedCost)}</strong></span>}
       </div>
+      <DepreciationClose monthLabel={monthLabel} monthlyDep={monthlyDep} />
       <AddAsset />
       <div style={sectionLabel}>ASSET REGISTER · {assets.length}</div>
       {assets.length === 0 ? (
@@ -770,7 +809,7 @@ export default function MoneyPanel({
       {tab === "ledger" && <Ledger entries={entries} monthLabel={monthLabel} />}
       {tab === "expense" && <ExpenseEntry categories={categories} />}
       {tab === "budgets" && <Budgets budgets={budgets} categories={categories} monthLabel={monthLabel} />}
-      {tab === "assets" && <Assets assets={assets} />}
+      {tab === "assets" && <Assets assets={assets} monthLabel={monthLabel} />}
       {tab === "payables" && <Payables payables={payables} invoices={invoices} today={today} />}
     </div>
   );
