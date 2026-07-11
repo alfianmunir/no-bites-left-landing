@@ -312,6 +312,8 @@ a { cursor: pointer; }
    • <900px — mobile-first single column, the two-row chip nav on top (kitchen,
      phone in hand). • ≥900px — a persistent grouped dark sidebar + wide content.
    Both are always rendered by the server component; CSS picks one. */
+@keyframes opsPanelIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes opsScrimIn { from { opacity: 0; } to { opacity: 1; } }
 .ops2-root { min-height: 100dvh; background: var(--surface2); }
 .ops2-main { min-width: 0; }
 .ops2-sidebar { display: none; }

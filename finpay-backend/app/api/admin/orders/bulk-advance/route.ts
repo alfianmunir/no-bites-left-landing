@@ -16,11 +16,17 @@ import { isAdminSession } from "@/lib/adminAuth";
 import { getStore } from "@/lib/db";
 import { progressionFor, nextFulfillmentStatus, type OrderStatus } from "@/lib/orders";
 import { notifyCustomerReady } from "@/lib/notify";
+import { logActivity } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
 
 const TARGETS: ReadonlySet<string> = new Set(["BAKING", "READY_FOR_PICKUP", "PICKED_UP"]);
+const TARGET_LABEL: Record<string, { en: string; id: string; tone: string }> = {
+  BAKING: { en: "Packed", id: "Dikemas", tone: "#3b9fd6" },
+  READY_FOR_PICKUP: { en: "Ready for pickup", id: "Siap diambil", tone: "#54300b" },
+  PICKED_UP: { en: "Picked up", id: "Sudah diambil", tone: "#2d9322" },
+};
 const MAX_ORDERS = 100;
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -70,6 +76,16 @@ export async function POST(req: Request): Promise<NextResponse> {
       await notifyCustomerReady(current);
     }
     advanced++;
+  }
+
+  if (advanced > 0) {
+    const lbl = TARGET_LABEL[target];
+    await logActivity({
+      kind: "website_bulk_advance",
+      messageEn: `${advanced} website order(s) → ${lbl.en}${skipped ? ` · ${skipped} skipped` : ""}`,
+      messageId: `${advanced} pesanan situs → ${lbl.id}${skipped ? ` · ${skipped} dilewati` : ""}`,
+      tone: lbl.tone,
+    });
   }
 
   return NextResponse.json({ advanced, skipped });

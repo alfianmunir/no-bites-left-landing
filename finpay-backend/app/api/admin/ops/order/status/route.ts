@@ -2,13 +2,20 @@
  *  and/or toggle its payment status. Body: { orderId, fulfillmentStatus?, paymentStatus? }. */
 import { NextResponse } from "next/server";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, updateOrderState } from "@/lib/opsStore";
+import { opsEnabled, updateOrderState, logActivity } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
 
 const FULFILLMENT = ["preparing", "packed", "in_delivery", "delivered"];
 const PAYMENT = ["unpaid", "paid"];
+
+const STAGE: Record<string, { en: string; id: string; tone: string }> = {
+  preparing: { en: "Preparing", id: "Disiapkan", tone: "#f58c21" },
+  packed: { en: "Packed", id: "Dikemas", tone: "#3b9fd6" },
+  in_delivery: { en: "In delivery", id: "Diantar", tone: "#54300b" },
+  delivered: { en: "Delivered", id: "Terkirim", tone: "#2d9322" },
+};
 
 export async function POST(req: Request): Promise<NextResponse> {
   if (!(await isAdminSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -39,6 +46,15 @@ export async function POST(req: Request): Promise<NextResponse> {
     const ok = await updateOrderState(orderId, patch);
     if (!ok) return NextResponse.json({ error: "order not found" }, { status: 404 });
     logOrder("ops_order_status", { orderId, ...patch });
+    const ref = `#${orderId.slice(0, 6)}`;
+    if (patch.fulfillmentStatus) {
+      const s = STAGE[patch.fulfillmentStatus];
+      await logActivity({ kind: "order_status", messageEn: `Order ${ref} → ${s.en}`, messageId: `Pesanan ${ref} → ${s.id}`, tone: s.tone });
+    }
+    if (patch.paymentStatus) {
+      const paid = patch.paymentStatus === "paid";
+      await logActivity({ kind: "order_payment", messageEn: `Order ${ref} marked ${paid ? "paid" : "unpaid"}`, messageId: `Pesanan ${ref} ditandai ${paid ? "lunas" : "belum lunas"}`, tone: paid ? "#2d9322" : "#e24026" });
+    }
     return NextResponse.json({ ok: true });
   } catch (e) {
     logOrder("ops_order_status_failed", { orderId, error: String(e) });

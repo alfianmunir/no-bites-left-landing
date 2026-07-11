@@ -20,6 +20,7 @@ import { env } from "./env";
 import { DEFAULT_PRICING_CONFIG, type PricingConfig } from "./opsPricing";
 import { assemblePnL, monthlyDepreciation, type PnL } from "./opsFinance";
 import { hashPassword, verifyPassword } from "./password";
+import { logOrder } from "./log";
 
 /** Ops screens need the real database — there is no file-store fallback. */
 export const opsEnabled = Boolean(env.databaseUrl);
@@ -1416,6 +1417,117 @@ export async function listWebsiteOrderEconomics(orderNos: string[]): Promise<Rec
     out[r.order_no as string] = { gross: num(r.gross), cogs: num(r.cogs), feePct: num(r.fee_pct), feeFlat: num(r.fee_flat) };
   }
   return out;
+}
+
+// --- Activity feed + notify channels (Phase 11) ------------------------------
+
+export interface ActivityRow {
+  id: string;
+  ts: string;
+  actor: string | null;
+  kind: string;
+  messageEn: string;
+  messageId: string;
+  tone: string;
+}
+
+export interface NotifyChannels {
+  whatsapp: boolean;
+  email: boolean;
+}
+
+/**
+ * Append one activity-feed entry, then mirror it to any enabled notify channel.
+ * FULLY best-effort and swallowed: a missing table (migration not applied yet) or
+ * a send failure must NEVER break the mutation that triggered it, so every caller
+ * can `await logActivity(...)` without a guard. Stores both language messages so
+ * the EN/ID toggle (Phase 12) can localise the feed without re-deriving it.
+ */
+export async function logActivity(entry: {
+  kind: string;
+  messageEn: string;
+  messageId: string;
+  tone?: string;
+  actor?: string | null;
+}): Promise<void> {
+  try {
+    const p = await pool();
+    await p.query(
+      `INSERT INTO ops.activity_log (actor, kind, message_en, message_id, tone)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [entry.actor ?? null, entry.kind, entry.messageEn, entry.messageId, entry.tone ?? "#54300b"],
+    );
+    const ch = await getNotifyChannels();
+    if (ch.email || ch.whatsapp) {
+      // Dynamic import avoids any static opsStore↔notify load cycle.
+      const notify = await import("./notify");
+      if (ch.email) await notify.sendActivityEmail(entry.messageEn).catch(() => {});
+      if (ch.whatsapp) await notify.sendActivityWhatsapp(entry.messageEn).catch(() => {});
+    }
+  } catch (e) {
+    logOrder("ops_activity_log_failed", { kind: entry.kind, error: String(e) });
+  }
+}
+
+/** Recent activity, newest first. Table-missing-safe → []. */
+export async function listActivity(limit = 50): Promise<ActivityRow[]> {
+  try {
+    const p = await pool();
+    const { rows } = await p.query(
+      `SELECT id, ts, actor, kind, message_en, message_id, tone
+         FROM ops.activity_log ORDER BY ts DESC LIMIT $1`,
+      [limit],
+    );
+    return rows.map((r) => ({
+      id: r.id as string,
+      ts: new Date(r.ts as string).toISOString(),
+      actor: (r.actor as string) ?? null,
+      kind: r.kind as string,
+      messageEn: r.message_en as string,
+      messageId: r.message_id as string,
+      tone: r.tone as string,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Count of activity strictly newer than `sinceISO` (null = count all), for the
+ *  unread badge. Table-missing-safe → 0. */
+export async function countActivitySince(sinceISO: string | null): Promise<number> {
+  try {
+    const p = await pool();
+    const { rows } = sinceISO
+      ? await p.query(`SELECT count(*)::int AS n FROM ops.activity_log WHERE ts > $1::timestamptz`, [sinceISO])
+      : await p.query(`SELECT count(*)::int AS n FROM ops.activity_log`);
+    return num(rows[0]?.n);
+  } catch {
+    return 0;
+  }
+}
+
+/** Notify-channel toggles. Table-missing-safe → both off. */
+export async function getNotifyChannels(): Promise<NotifyChannels> {
+  try {
+    const p = await pool();
+    const { rows } = await p.query(`SELECT channel, enabled FROM ops.notify_channels`);
+    const map = new Map(rows.map((r) => [r.channel as string, r.enabled as boolean]));
+    return { whatsapp: map.get("whatsapp") ?? false, email: map.get("email") ?? false };
+  } catch {
+    return { whatsapp: false, email: false };
+  }
+}
+
+/** Toggle a notify channel; returns the full updated set. */
+export async function setNotifyChannel(channel: string, enabled: boolean): Promise<NotifyChannels> {
+  if (channel !== "whatsapp" && channel !== "email") throw new Error("invalid channel");
+  const p = await pool();
+  await p.query(
+    `INSERT INTO ops.notify_channels (channel, enabled, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (channel) DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()`,
+    [channel, enabled],
+  );
+  return getNotifyChannels();
 }
 
 async function loadOrderItems(orderIds: string[]): Promise<Map<string, SalesOrderItem[]>> {

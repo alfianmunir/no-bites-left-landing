@@ -1,8 +1,11 @@
 /** POST /api/admin/ops/invoice — update a B2B invoice's AR status. */
 import { NextResponse } from "next/server";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, setInvoiceStatus } from "@/lib/opsStore";
+import { opsEnabled, setInvoiceStatus, logActivity } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
+
+const INV_EN: Record<string, string> = { paid: "paid", sent: "sent", void: "voided", draft: "draft", overdue: "overdue" };
+const INV_ID: Record<string, string> = { paid: "lunas", sent: "terkirim", void: "dibatalkan", draft: "draf", overdue: "terlambat" };
 
 export const runtime = "nodejs";
 
@@ -25,6 +28,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     const ok = await setInvoiceStatus(invoiceId, status);
     if (!ok) return NextResponse.json({ error: "invoice not found" }, { status: 404 });
     logOrder("ops_invoice_status", { invoiceId, status });
+    await logActivity({
+      kind: "invoice_status",
+      messageEn: `B2B invoice ${INV_EN[status] ?? status}`,
+      messageId: `Faktur B2B ${INV_ID[status] ?? status}`,
+      tone: status === "paid" ? "#2d9322" : status === "void" ? "#6f5c45" : "#d98b1e",
+    });
     return NextResponse.json({ ok: true });
   } catch (e) {
     const msg = String(e).includes("invalid invoice status") ? "invalid status" : "Update failed — try again.";

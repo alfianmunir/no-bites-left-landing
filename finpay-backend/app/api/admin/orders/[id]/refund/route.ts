@@ -4,8 +4,10 @@ import { isAdminSession } from "@/lib/adminAuth";
 import { getStore } from "@/lib/db";
 import { canTransition } from "@/lib/orders";
 import { refundOrder } from "@/lib/finpay";
-import { opsEnabled, reverseWebsiteOrderFinance } from "@/lib/opsStore";
+import { opsEnabled, reverseWebsiteOrderFinance, logActivity } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
+
+const idr = (n: number) => "Rp " + Math.round(n).toLocaleString("id-ID");
 
 export const runtime = "nodejs";
 
@@ -44,5 +46,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
   }
   logOrder("admin_refund", { orderId: id, amount: order.amount });
+  await logActivity({
+    kind: "website_refund",
+    messageEn: `Website ${id} refunded — ${idr(order.amount)} (Finpay)`,
+    messageId: `Situs ${id} direfund — ${idr(order.amount)} (Finpay)`,
+    tone: "#e24026",
+  });
   return NextResponse.json({ order: updated });
 }

@@ -1,8 +1,10 @@
 /** POST /api/admin/ops/order — record a manual channel order (OMS quick-entry). */
 import { NextResponse } from "next/server";
 import { isAdminSession } from "@/lib/adminAuth";
-import { opsEnabled, createSalesOrder, type SalesLineInput } from "@/lib/opsStore";
+import { opsEnabled, createSalesOrder, logActivity, type SalesLineInput } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
+
+const idr = (n: number) => "Rp " + Math.round(n).toLocaleString("id-ID");
 
 export const runtime = "nodejs";
 
@@ -49,6 +51,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       lines,
     });
     logOrder("ops_order_create", { salesOrderId: result.salesOrderId, invoiceId: result.invoiceId, lineCount: lines.length });
+    const gross = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0);
+    const who = body.customerRef?.trim() || "walk-in";
+    await logActivity({
+      kind: "order_create",
+      messageEn: `Order recorded — ${who} · ${idr(gross)}${result.invoiceId ? " · invoice raised" : ""}`,
+      messageId: `Pesanan tersimpan — ${who} · ${idr(gross)}${result.invoiceId ? " · faktur dibuat" : ""}`,
+      tone: "#2d9322",
+    });
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
     logOrder("ops_order_create_failed", { error: String(e) });

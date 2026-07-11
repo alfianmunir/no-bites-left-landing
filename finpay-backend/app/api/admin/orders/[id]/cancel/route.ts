@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { isAdminSession } from "@/lib/adminAuth";
 import { getStore } from "@/lib/db";
 import { cancelOrder } from "@/lib/finpay";
-import { opsEnabled, reverseWebsiteOrderFinance } from "@/lib/opsStore";
+import { opsEnabled, reverseWebsiteOrderFinance, logActivity } from "@/lib/opsStore";
 import { logOrder } from "@/lib/log";
 
 export const runtime = "nodejs";
@@ -37,5 +37,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
   }
   logOrder("admin_cancel", { orderId: id });
+  await logActivity({
+    kind: "website_cancel",
+    messageEn: `Website ${id} cancelled (Finpay)`,
+    messageId: `Situs ${id} dibatalkan (Finpay)`,
+    tone: "#e24026",
+  });
   return NextResponse.json({ order: updated });
 }
