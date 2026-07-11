@@ -2046,14 +2046,23 @@ export interface ExpenseCategoryRow {
   name: string;
   type: "opex" | "marketing" | "capex";
   monthlyBudget: number | null;
+  countInkind: boolean; // fold in-kind giveaway made-cost into this budget (phase 14)
 }
 
 export interface BudgetRow {
   code: string;
   name: string;
   monthlyBudget: number;
-  spent: number;
+  spent: number; // cashSpent + inkindSpent
+  cashSpent: number; // recorded ops.expenses cash-out
+  inkindSpent: number; // non-cash carve-out made-cost, when countInkind is on
+  countInkind: boolean;
 }
+
+/** Carve-out (sample/KOL/R&D) made-cost → budget category, for in-kind budget
+ *  tracking. qty_sample + qty_rnd count as tester/R&D distribution; qty_kol as
+ *  endorsement. Single source of truth for the mapping (phase 14). */
+export const INKIND_CATEGORY_CODES = { rndTester: "mkt_rnd_tester", endorsement: "mkt_endorsement" } as const;
 
 export interface AssetRow {
   id: string;
@@ -2149,7 +2158,7 @@ export async function listCashEntries(filter: CashEntryFilter = {}, limit = 200)
 export async function listExpenseCategories(): Promise<ExpenseCategoryRow[]> {
   const p = await pool();
   const { rows } = await p.query(
-    `SELECT id, code, name, type, monthly_budget FROM ops.expense_categories ORDER BY type, code`,
+    `SELECT id, code, name, type, monthly_budget, count_inkind FROM ops.expense_categories ORDER BY type, code`,
   );
   return rows.map((r) => ({
     id: r.id as string,
@@ -2157,31 +2166,60 @@ export async function listExpenseCategories(): Promise<ExpenseCategoryRow[]> {
     name: r.name as string,
     type: r.type as "opex" | "marketing" | "capex",
     monthlyBudget: r.monthly_budget == null ? null : num(r.monthly_budget),
+    countInkind: Boolean(r.count_inkind),
   }));
 }
 
-/** Budgeted categories (any type) with month-to-date spend vs monthly budget. */
+/** Budgeted categories (any type) with month-to-date spend vs monthly budget.
+ *  `spent` = recorded cash expenses (`cashSpent`) + optional non-cash in-kind
+ *  giveaway made-cost (`inkindSpent`, only when the category has countInkind on
+ *  — phase 14). The in-kind portion is the period's sample/KOL/R&D carve-out
+ *  cost from closed batches, mapped per INKIND_CATEGORY_CODES. */
 export async function listBudgetVsSpend(month: string): Promise<BudgetRow[]> {
   const p = await pool();
-  const { rows } = await p.query(
-    `SELECT ec.code, ec.name, ec.monthly_budget,
-            COALESCE(sum(e.amount), 0) AS spent
-       FROM ops.expense_categories ec
-       LEFT JOIN ops.expenses e
-         ON e.category_id = ec.id
-        AND e.occurred_at >= $1::date
-        AND e.occurred_at < ($1::date + interval '1 month')
-      WHERE ec.monthly_budget IS NOT NULL
-      GROUP BY ec.code, ec.name, ec.monthly_budget
-      ORDER BY ec.code`,
-    [month + "-01"],
-  );
-  return rows.map((r) => ({
-    code: r.code as string,
-    name: r.name as string,
-    monthlyBudget: num(r.monthly_budget),
-    spent: num(r.spent),
-  }));
+  const start = month + "-01";
+  const [cats, ink] = await Promise.all([
+    p.query(
+      `SELECT ec.code, ec.name, ec.monthly_budget, ec.count_inkind,
+              COALESCE(sum(e.amount), 0) AS spent
+         FROM ops.expense_categories ec
+         LEFT JOIN ops.expenses e
+           ON e.category_id = ec.id
+          AND e.occurred_at >= $1::date
+          AND e.occurred_at < ($1::date + interval '1 month')
+        WHERE ec.monthly_budget IS NOT NULL
+        GROUP BY ec.code, ec.name, ec.monthly_budget, ec.count_inkind
+        ORDER BY ec.code`,
+      [start],
+    ),
+    p.query(
+      `SELECT COALESCE(sum((bl.qty_sample + bl.qty_rnd) * bl.cost_per_unit), 0) AS rnd_tester,
+              COALESCE(sum(bl.qty_kol * bl.cost_per_unit), 0) AS endorsement
+         FROM ops.batch_lines bl
+         JOIN ops.production_batches pb ON pb.id = bl.batch_id
+        WHERE pb.status = 'closed' AND bl.cost_per_unit IS NOT NULL
+          AND pb.baked_at >= $1::date AND pb.baked_at < ($1::date + interval '1 month')`,
+      [start],
+    ),
+  ]);
+  const inkindByCode: Record<string, number> = {
+    [INKIND_CATEGORY_CODES.rndTester]: num(ink.rows[0].rnd_tester),
+    [INKIND_CATEGORY_CODES.endorsement]: num(ink.rows[0].endorsement),
+  };
+  return cats.rows.map((r) => {
+    const cashSpent = num(r.spent);
+    const countInkind = Boolean(r.count_inkind);
+    const inkindSpent = countInkind ? inkindByCode[r.code as string] ?? 0 : 0;
+    return {
+      code: r.code as string,
+      name: r.name as string,
+      monthlyBudget: num(r.monthly_budget),
+      cashSpent,
+      inkindSpent,
+      spent: cashSpent + inkindSpent,
+      countInkind,
+    };
+  });
 }
 
 /** Create an expense category (with an optional monthly budget). */
@@ -2200,10 +2238,11 @@ export async function createExpenseCategory(input: {
   return rows[0].id as string;
 }
 
-/** Rename a category and/or set/clear its monthly budget. */
+/** Rename a category, set/clear its monthly budget, and/or toggle whether it
+ *  counts in-kind giveaway cost (phase 14). */
 export async function updateExpenseCategory(
   id: string,
-  patch: { name?: string; monthlyBudget?: number | null },
+  patch: { name?: string; monthlyBudget?: number | null; countInkind?: boolean },
 ): Promise<void> {
   const p = await pool();
   const sets: string[] = [];
@@ -2211,6 +2250,7 @@ export async function updateExpenseCategory(
   let i = 1;
   if (patch.name !== undefined) { sets.push(`name = $${i++}`); vals.push(patch.name.trim()); }
   if (patch.monthlyBudget !== undefined) { sets.push(`monthly_budget = $${i++}`); vals.push(patch.monthlyBudget); }
+  if (patch.countInkind !== undefined) { sets.push(`count_inkind = $${i++}`); vals.push(patch.countInkind); }
   if (sets.length === 0) return;
   vals.push(id);
   await p.query(`UPDATE ops.expense_categories SET ${sets.join(", ")} WHERE id = $${i}`, vals);

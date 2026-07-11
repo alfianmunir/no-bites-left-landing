@@ -310,9 +310,21 @@ function CategoryRowEdit({ cat }: { cat: ExpenseCategoryRow }) {
   const router = useRouter();
   const [name, setName] = useState(cat.name);
   const [budget, setBudget] = useState(cat.monthlyBudget == null ? "" : String(cat.monthlyBudget));
+  const [inkind, setInkind] = useState(cat.countInkind);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dirty = name.trim() !== cat.name || (budget === "" ? null : Number(budget)) !== cat.monthlyBudget;
+
+  const toggleInkind = async () => {
+    const next = !inkind;
+    setInkind(next); // optimistic
+    setBusy(true);
+    setError(null);
+    const { ok, error } = await postBudget({ action: "update", id: cat.id, countInkind: next });
+    setBusy(false);
+    if (!ok) { setInkind(!next); setError(error ?? "failed"); return; }
+    router.refresh();
+  };
 
   const save = async () => {
     setBusy(true);
@@ -342,6 +354,12 @@ function CategoryRowEdit({ cat }: { cat: ExpenseCategoryRow }) {
         {dirty && <button onClick={save} disabled={busy} style={{ padding: "7px 12px", borderRadius: 8, border: "none", background: "var(--green)", color: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer" }}>Save</button>}
         <button onClick={del} disabled={busy} aria-label="delete category" style={{ border: "none", background: "transparent", color: "var(--red)", fontSize: 15, cursor: "pointer" }}>🗑</button>
       </div>
+      {cat.type === "marketing" && (
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 6, marginLeft: 98, fontSize: 12, color: "var(--soft)", fontWeight: 700, cursor: busy ? "default" : "pointer" }}>
+          <input type="checkbox" checked={inkind} disabled={busy} onChange={toggleInkind} />
+          Count in-kind giveaways (sample/KOL/R&D made-cost) against this budget
+        </label>
+      )}
       {error && <div style={{ fontSize: 12, color: "var(--red)", fontWeight: 700, marginTop: 4 }}>{error}</div>}
     </div>
   );
@@ -404,6 +422,11 @@ function Budgets({ budgets, categories, monthLabel }: { budgets: BudgetRow[]; ca
               <div style={{ height: 8, borderRadius: 999, background: "var(--surface2)", overflow: "hidden" }}>
                 <div style={{ height: "100%", width: `${Math.min(100, pct * 100)}%`, background: barColor, borderRadius: 999 }} />
               </div>
+              {b.inkindSpent > 0 && (
+                <div style={{ fontSize: 11.5, color: "var(--soft)", fontWeight: 700, marginTop: 6 }}>
+                  {rupiah(b.cashSpent)} cash + {rupiah(b.inkindSpent)} in-kind giveaways
+                </div>
+              )}
               {over && <div style={{ fontSize: 12, color: "var(--red)", fontWeight: 700, marginTop: 6 }}>Over budget by {rupiah(b.spent - b.monthlyBudget)}</div>}
             </div>
           );
