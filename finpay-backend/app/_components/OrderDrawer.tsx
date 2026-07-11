@@ -11,7 +11,7 @@ import { useAuth } from "@/lib/auth/AuthContext";
 import { useOrderFlow, type OrderScreen } from "@/lib/order-flow/OrderFlowContext";
 import { PICKUP_LOCATION, SUPPORT_WHATSAPP } from "@/lib/fulfillment";
 import { formatPickupDate } from "@/lib/pickupDate";
-import type { Order, OrderStatus } from "@/lib/orders";
+import type { Order, OrderStatus, PublicOrder } from "@/lib/orders";
 
 function rupiah(n: number): string {
   return "Rp " + n.toLocaleString("id-ID");
@@ -262,7 +262,7 @@ const STATUS_CHIP: Record<string, { bg: string; color: string; label: string }> 
   PICKED_UP: { bg: "#e9f5e7", color: "var(--green)", label: "Picked up" },
   EXPIRED: { bg: "var(--surface2)", color: "var(--soft)", label: "Expired" },
   CANCELLED: { bg: "var(--surface2)", color: "var(--soft)", label: "Cancelled" },
-  REFUNDED: { bg: "#e8f6ff", color: "var(--blue)", label: "Refunded" },
+  REFUNDED: { bg: "#e8f6ff", color: "var(--blue)", label: "Cancelled – refund" },
 };
 
 function OrdersScreen() {
@@ -341,7 +341,7 @@ const TIMELINE: { key: OrderStatus; label: string }[] = [
 
 function StatusScreen() {
   const flow = useOrderFlow();
-  const [order, setOrder] = useState<Order | null | undefined>(undefined);
+  const [order, setOrder] = useState<PublicOrder | null | undefined>(undefined);
   useEffect(() => {
     if (!flow.statusOrderId) return;
     fetch(`/api/orders/${flow.statusOrderId}`)
@@ -361,6 +361,31 @@ function StatusScreen() {
           <div style={{ textAlign: "center", color: "var(--soft)", padding: 30 }}>Loading…</div>
         ) : order === null ? (
           <div style={{ textAlign: "center", color: "var(--soft)", padding: 30 }}>Order not found.</div>
+        ) : ["CANCELLED", "REFUNDED", "EXPIRED"].includes(order.status) ? (
+          <>
+            <div style={{ padding: 14, borderRadius: 16, background: "var(--surface2)", border: "1.5px solid var(--line)" }}>
+              <div style={{ fontWeight: 800, fontSize: 14, color: "var(--choco)" }}>
+                {order.status === "EXPIRED" ? "⏱ Order expired" : "✕ Order cancelled"}
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 4, lineHeight: 1.5 }}>
+                {order.status === "EXPIRED"
+                  ? "The payment window closed, so this order was auto-cancelled."
+                  : "Your order was cancelled, and the refund process will be followed up via WhatsApp."}
+              </div>
+              {order.cancel_reason && (
+                <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 10, background: "#fff", border: "1.5px solid var(--line)" }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--soft)" }}>Cancellation note</div>
+                  <div style={{ fontSize: 13, color: "var(--ink)", marginTop: 2 }}>{order.cancel_reason}</div>
+                </div>
+              )}
+            </div>
+            <div style={{ borderTop: "1.5px solid var(--line)", paddingTop: 12, fontSize: 13, color: "var(--soft)" }}>
+              {order.items.reduce((s, i) => s + i.qty, 0)} items · {rupiah(order.amount)}
+            </div>
+            <a href={`https://wa.me/${SUPPORT_WHATSAPP}?text=${encodeURIComponent(`Hi! I have a question about order ${order.id}`)}`} target="_blank" rel="noreferrer" className="btn-outline" style={{ textAlign: "center", textDecoration: "none", display: "block" }}>
+              Problem with your order? WhatsApp us
+            </a>
+          </>
         ) : (
           <>
             <div style={{ padding: 14, borderRadius: 16, background: order.status === "READY_FOR_PICKUP" ? "var(--tint-success)" : "var(--tint-amber)", border: "1.5px solid rgba(245,140,33,0.3)" }}>

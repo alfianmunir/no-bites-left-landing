@@ -54,15 +54,15 @@ export interface OrderStore {
   get(id: string): Promise<Order | null>;
   update(id: string, patch: OrderUpdate): Promise<Order | null>;
   /** Transition status + append a status_history event ({status, at, by}). */
-  setStatus(id: string, status: OrderStatus, by: StatusActor): Promise<Order | null>;
+  setStatus(id: string, status: OrderStatus, by: StatusActor, note?: string): Promise<Order | null>;
   appendCallback(id: string, entry: unknown): Promise<Order | null>;
   list(filter?: { status?: OrderStatus; userId?: string }): Promise<Order[]>;
   /** PENDING orders whose expiry_link is before `before` (for reconciliation). */
   findStalePending(before: string): Promise<Order[]>;
 }
 
-function statusEvent(status: OrderStatus, by: StatusActor): StatusEvent {
-  return { status, at: new Date().toISOString(), by };
+function statusEvent(status: OrderStatus, by: StatusActor, note?: string): StatusEvent {
+  return { status, at: new Date().toISOString(), by, ...(note ? { note } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ class FileStore implements OrderStore {
     });
   }
 
-  setStatus(id: string, status: OrderStatus, by: StatusActor): Promise<Order | null> {
+  setStatus(id: string, status: OrderStatus, by: StatusActor, note?: string): Promise<Order | null> {
     return this.serialize(async () => {
       const all = await this.readAll();
       const cur = all[id];
@@ -146,7 +146,7 @@ class FileStore implements OrderStore {
       const next: Order = {
         ...cur,
         status,
-        status_history: [...(cur.status_history ?? []), statusEvent(status, by)],
+        status_history: [...(cur.status_history ?? []), statusEvent(status, by, note)],
         updated_at: new Date().toISOString(),
       };
       all[id] = next;
@@ -356,7 +356,7 @@ class PostgresStore implements OrderStore {
     return this.rowToOrder(rows[0]);
   }
 
-  async setStatus(id: string, status: OrderStatus, by: StatusActor): Promise<Order | null> {
+  async setStatus(id: string, status: OrderStatus, by: StatusActor, note?: string): Promise<Order | null> {
     const pool = await this.pool();
     const c = columnsForStatus(status);
     const sets: string[] = [];
@@ -368,7 +368,7 @@ class PostgresStore implements OrderStore {
     // Stamp the transition time once (don't clobber an earlier stamp on replay).
     if (c.stamp) sets.push(`${c.stamp} = COALESCE(${c.stamp}, now())`);
     sets.push(`status_history = COALESCE(status_history, '[]'::jsonb) || $${i++}::jsonb`);
-    vals.push(JSON.stringify([statusEvent(status, by)]));
+    vals.push(JSON.stringify([statusEvent(status, by, note)]));
     sets.push(`updated_at = now()`);
     vals.push(id); // WHERE order_no
     const { rows } = await pool.query(
