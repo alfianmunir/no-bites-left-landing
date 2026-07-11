@@ -1,7 +1,13 @@
 import { redirect } from "next/navigation";
 import { getOpsSession } from "@/lib/adminAuth";
 import { opsEnabled, listStockBalance, listReorderAlerts, listExpiringLots, listFinishedGoodsBalance } from "@/lib/opsStore";
-import { OpsShell, DbNotice, rupiah, qty } from "../OpsChrome";
+import { OpsShell, DbNotice, rupiah } from "../OpsChrome";
+
+/** Stock quantities read cleaner rounded to 1 decimal (e.g. 31,5 g), trailing
+ *  zero trimmed so whole counts stay whole (310, not 310,0). */
+function qty(n: number): string {
+  return Number(n.toFixed(1)).toLocaleString("id-ID");
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
