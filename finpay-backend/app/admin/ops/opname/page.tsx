@@ -1,8 +1,11 @@
 import { redirect } from "next/navigation";
 import { isOpsUser } from "@/lib/adminAuth";
-import { opsEnabled, listStockBalance, listOpnameAdjustments, getOpnameSince, type OpnameCategory } from "@/lib/opsStore";
+import { opsEnabled, listStockBalance, listProductOpnameChoices, listOpnameAdjustments, getOpnameSince, type OpnameCategory } from "@/lib/opsStore";
 import { OpsShell, DbNotice, rupiah, qty } from "../OpsChrome";
 import OpnameForm from "./OpnameForm";
+import ProductOpnameForm from "./ProductOpnameForm";
+
+const sectionLabel: React.CSSProperties = { fontSize: 12.5, fontWeight: 900, letterSpacing: "0.02em", color: "var(--choco)", marginBottom: 8 };
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,7 +30,7 @@ export default async function OpsOpnamePage() {
     );
   }
 
-  const [balance, adjustments, since] = await Promise.all([listStockBalance(), listOpnameAdjustments(), getOpnameSince()]);
+  const [balance, products, adjustments, since] = await Promise.all([listStockBalance(), listProductOpnameChoices(), listOpnameAdjustments(), getOpnameSince()]);
 
   // Surplus / loss / equal breakdown: count of adjustments + summed value per bucket.
   const summary = { surplus: { n: 0, value: 0 }, loss: { n: 0, value: 0 }, equal: { n: 0, value: 0 } };
@@ -38,8 +41,12 @@ export default async function OpsOpnamePage() {
   const netValue = summary.surplus.value + summary.loss.value; // equal contributes 0
 
   return (
-    <OpsShell active="/admin/ops/opname" title="Stock opname" subtitle="Count an item — the variance posts as a surplus / loss / equal adjustment">
+    <OpsShell active="/admin/ops/opname" title="Stock opname" subtitle="Count stock — the variance posts as a surplus / loss / equal adjustment">
+      <div style={sectionLabel}>🧺 Ingredients &amp; packaging</div>
       <OpnameForm balance={balance} />
+
+      <div style={{ ...sectionLabel, marginTop: 22 }}>🥐 Finished goods</div>
+      <ProductOpnameForm products={products} />
 
       {/* Surplus / loss / equal summary */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 18 }}>
@@ -67,6 +74,7 @@ export default async function OpsOpnamePage() {
                 <tr>
                   <th style={th}>Date</th>
                   <th style={th}>Item</th>
+                  <th style={th}>Kind</th>
                   <th style={th}>Type</th>
                   <th style={{ ...th, textAlign: "right" }}>Variance</th>
                   <th style={{ ...th, textAlign: "right" }}>Value</th>
@@ -78,6 +86,9 @@ export default async function OpsOpnamePage() {
                   <tr key={a.id}>
                     <td style={{ ...td, color: "var(--soft)", fontSize: 12.5 }}>{a.at.slice(0, 10)}</td>
                     <td style={{ ...td, fontWeight: 700, whiteSpace: "normal" }}>{a.name}</td>
+                    <td style={td}>
+                      <span style={{ fontSize: 10.5, fontWeight: 900, letterSpacing: "0.04em", color: "var(--soft)", textTransform: "uppercase" }}>{a.kind === "product" ? "FG" : "ING"}</span>
+                    </td>
                     <td style={td}>
                       <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: CAT[a.category].color, borderRadius: 999, padding: "2px 9px" }}>{CAT[a.category].label}</span>
                     </td>
