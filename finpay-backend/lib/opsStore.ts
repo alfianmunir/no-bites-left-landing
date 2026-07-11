@@ -1217,14 +1217,34 @@ export async function createSalesOrder(input: {
     // website waits on the deferred PG-webhook trigger, so it's skipped here.
     if (gross > 0 && channelName !== "b2b" && channelName !== "website") {
       const isMarketplace = channelName === "gofood" || channelName === "grabfood" || channelName === "shopeefood";
-      const account = isMarketplace ? "marketplace_pending" : "bank";
-      const net = gross - (gross * feePct + feeFlat); // customer pays gross; platform keeps its commission
-      if (net > 0) {
+      const fee = gross * feePct + feeFlat;
+      const occ = input.orderedAt ? input.orderedAt.slice(0, 10) : null;
+      const note = input.customerRef?.trim() || null;
+      if (isMarketplace) {
+        // Marketplaces hold the money until settlement — the net lands in the
+        // pending account (fee split waits on a settlement event).
+        const net = gross - fee;
+        if (net > 0) {
+          await client.query(
+            `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+             VALUES ('in', $1, 'marketplace_pending', $2, 'sales_order', $3, COALESCE($4::date, CURRENT_DATE), $5)`,
+            [net, `sales_${channelName}`, salesOrderId, occ, note],
+          );
+        }
+      } else {
+        // Never net (Audit H7): gross revenue IN, channel fee OUT as its own row.
         await client.query(
           `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
-           VALUES ('in', $1, $2, $3, 'sales_order', $4, COALESCE($5::date, CURRENT_DATE), $6)`,
-          [net, account, `sales_${channelName}`, salesOrderId, input.orderedAt ? input.orderedAt.slice(0, 10) : null, input.customerRef?.trim() || null],
+           VALUES ('in', $1, 'bank', $2, 'sales_order', $3, COALESCE($4::date, CURRENT_DATE), $5)`,
+          [gross, `sales_${channelName}`, salesOrderId, occ, note],
         );
+        if (fee > 0) {
+          await client.query(
+            `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+             VALUES ('out', $1, 'bank', 'fee_pg', 'sales_order', $2, COALESCE($3::date, CURRENT_DATE), $4)`,
+            [fee, salesOrderId, occ, `Channel fee — ${channelName}`],
+          );
+        }
       }
     }
 
@@ -1341,15 +1361,22 @@ export async function realizeWebsiteOrderPayment(orderNo: string): Promise<{ rea
         [l.productId, -l.qty, soId, madeCost],
       );
     }
-    // Cash-in NET of the channel gateway fee (ties to Finpay's net settlement +
-    // the P&L's net revenue).
-    const net = amount > 0 ? amount - (amount * channel.feePct + channel.feeFlat) : 0;
-    if (net > 0) {
+    // Never net (Audit H7): gross revenue IN + the PG fee OUT as its own row.
+    // Net bank movement stays amount − fee (Finpay's net settlement).
+    const fee = amount > 0 ? amount * channel.feePct + channel.feeFlat : 0;
+    if (amount > 0) {
       await client.query(
         `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
          VALUES ('in', $1, 'bank', 'sales_website', 'sales_order', $2, CURRENT_DATE, $3)`,
-        [net, soId, orderNo],
+        [amount, soId, orderNo],
       );
+      if (fee > 0) {
+        await client.query(
+          `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+           VALUES ('out', $1, 'bank', 'fee_pg', 'sales_order', $2, CURRENT_DATE, $3)`,
+          [fee, soId, `PG fee — ${orderNo}`],
+        );
+      }
     }
     await client.query("COMMIT");
     return { realized: true, flagged };
@@ -1853,13 +1880,22 @@ async function reverseSalesOrderLedgerTx(client: import("pg").PoolClient, salesO
         AND NOT EXISTS (SELECT 1 FROM ops.stock_moves WHERE ref_type = 'sales_order' AND ref_id = $1 AND reason = 'sale' AND qty > 0)`,
     [salesOrderId],
   );
+  // Reverse the NET cash effect per account. Post-H7 an order can have BOTH a
+  // gross 'in' and a fee_pg 'out'; netting them (in − out) and compensating with
+  // the opposite direction returns the account to baseline for either the old
+  // single-net-in shape or the new gross+fee split. Guarded to run at most once.
   await client.query(
     `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, note)
-     SELECT 'out', sum(amount), account, 'sales_reversal', 'sales_order_reversal', $1, 'Order reversed — cash returned'
-       FROM ops.cash_entries
-      WHERE ref_type = 'sales_order' AND ref_id = $1 AND direction = 'in'
-        AND NOT EXISTS (SELECT 1 FROM ops.cash_entries WHERE ref_type = 'sales_order_reversal' AND ref_id = $1)
-      GROUP BY account`,
+     SELECT CASE WHEN net >= 0 THEN 'out' ELSE 'in' END, abs(net), account,
+            'sales_reversal', 'sales_order_reversal', $1, 'Order reversed — cash returned'
+       FROM (
+         SELECT account, sum(CASE WHEN direction = 'in' THEN amount ELSE -amount END) AS net
+           FROM ops.cash_entries
+          WHERE ref_type = 'sales_order' AND ref_id = $1
+          GROUP BY account
+       ) t
+      WHERE net <> 0
+        AND NOT EXISTS (SELECT 1 FROM ops.cash_entries WHERE ref_type = 'sales_order_reversal' AND ref_id = $1)`,
     [salesOrderId],
   );
 }
@@ -2268,12 +2304,26 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
     [startISO, endISO],
   );
   // Opex + marketing from expenses (capex never hits P&L — it depreciates).
+  // Depreciation is a posted non-cash opex row (category 'opex_depreciation',
+  // Audit H3); it's pulled out into its own P&L line below, so exclude it here
+  // to avoid double-counting it inside general opex.
   const expQ = p.query(
     `SELECT ec.type, COALESCE(sum(e.amount), 0) AS amount
        FROM ops.expenses e
        JOIN ops.expense_categories ec ON ec.id = e.category_id
       WHERE e.occurred_at BETWEEN $1::date AND $2::date
+        AND ec.code <> 'opex_depreciation'
       GROUP BY ec.type`,
+    [startISO, endISO],
+  );
+  // Depreciation from the posted monthly-close expense (H3) — no longer
+  // recomputed live from the asset register.
+  const depQ = p.query(
+    `SELECT COALESCE(sum(e.amount), 0) AS amount
+       FROM ops.expenses e
+       JOIN ops.expense_categories ec ON ec.id = e.category_id
+      WHERE ec.code = 'opex_depreciation'
+        AND e.occurred_at BETWEEN $1::date AND $2::date`,
     [startISO, endISO],
   );
   // Waste (spoilage) + shrinkage (net opname loss). Both left inventory without
@@ -2313,9 +2363,10 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
         AND s.role NOT IN ('baker', 'packer')`,
     [startISO],
   );
-  const [sales, exp, leak, carve, lab] = await Promise.all([salesQ, expQ, leakQ, carveQ, laborQ]);
+  const [sales, exp, dep, leak, carve, lab] = await Promise.all([salesQ, expQ, depQ, leakQ, carveQ, laborQ]);
   const s = sales.rows[0];
-  const revenue = num(s.gross) - num(s.fee);
+  const revenue = num(s.gross); // GROSS — fees are their own line now (H7)
+  const fees = num(s.fee);
   const cogs = num(s.cogs);
   let opex = 0;
   let marketing = 0;
@@ -2328,10 +2379,10 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
   const samples = num(carve.rows[0].samples);
   const rnd = num(carve.rows[0].rnd);
   const labor = num(lab.rows[0].labor);
-  // Depreciation of owned assets (straight-line monthly) is a P&L cost.
-  const assets = await listAssets();
-  const depreciation = assets.reduce((sum, a) => sum + a.monthlyDepreciation, 0);
-  return assemblePnL({ revenue, cogs, labor, opex, marketing, samples, rnd, waste, shrinkage, depreciation });
+  // Depreciation is now the posted non-cash opex row for the period (H3); if the
+  // month hasn't been closed yet it reads 0 rather than a live estimate.
+  const depreciation = num(dep.rows[0].amount);
+  return assemblePnL({ revenue, fees, cogs, labor, opex, marketing, samples, rnd, waste, shrinkage, depreciation });
 }
 
 // --- M4 writes (append cash movements alongside the source row) --------------
@@ -2378,6 +2429,37 @@ export async function createExpense(input: {
   } finally {
     client.release();
   }
+}
+
+/** Monthly close → depreciation (Audit H3). Posts ONE non-cash opex expense
+ *  (category 'opex_depreciation') for the sum of owned-asset monthly
+ *  depreciation, dated to the month end. non_cash=true means NO paired
+ *  cash_entries row — depreciation is a P&L cost that never moves cash.
+ *  Idempotent: no-op if a depreciation expense already exists in that month.
+ *  Period is "YYYY-MM". */
+export async function postDepreciation(period: string): Promise<{ posted: boolean; amount: number; expenseId?: string }> {
+  const { start, end } = periodBounds(period);
+  const p = await pool();
+  const cat = await p.query(`SELECT id FROM ops.expense_categories WHERE code = 'opex_depreciation'`);
+  if (!cat.rows[0]) throw new Error("opex_depreciation category missing");
+  const categoryId = cat.rows[0].id as string;
+
+  const existing = await p.query(
+    `SELECT id FROM ops.expenses WHERE category_id = $1 AND occurred_at BETWEEN $2::date AND $3::date LIMIT 1`,
+    [categoryId, start, end],
+  );
+  const assets = await listAssets();
+  const amount = Math.round(assets.reduce((s, a) => s + a.monthlyDepreciation, 0));
+  if (existing.rows[0]) return { posted: false, amount };
+  if (amount <= 0) return { posted: false, amount: 0 };
+
+  const names = assets.filter((a) => a.monthlyDepreciation > 0).map((a) => a.name).join(", ");
+  const ins = await p.query(
+    `INSERT INTO ops.expenses (category_id, amount, vendor, note, occurred_at, recurring, non_cash)
+     VALUES ($1, $2, NULL, $3, $4::date, false, true) RETURNING id`,
+    [categoryId, amount, `Depreciation ${period} — ${names}`, end],
+  );
+  return { posted: true, amount, expenseId: ins.rows[0].id as string };
 }
 
 /** Mark a received purchase paid → posts the ingredient cash-out (F1/HANDOFF
@@ -2587,6 +2669,114 @@ export async function listStaff(): Promise<StaffRow[]> {
     equityPct: r.equity_pct == null ? null : num(r.equity_pct),
     active: Boolean(r.active),
     canLogin: Boolean(r.can_login),
+  }));
+}
+
+export interface StaffPayment {
+  staffId: string;
+  staffName: string;
+  expenseId: string;
+  payDate: string;
+  payType: string; // 'wage' | 'salary_accrual' | 'thr_accrual'
+  amount: number;
+  paid: boolean;
+  paidAt: string | null;
+  note: string | null;
+}
+
+export interface StaffPaymentSummary {
+  staffId: string;
+  staffName: string;
+  totalEarned: number;
+  totalPaid: number;
+  balanceOwed: number;
+  lastPaidAt: string | null;
+}
+
+/** Staff pay ledger (HANDOFF §1.5.5) — one row per wage/accrual from
+ *  ops.v_staff_payments. Pass a staffId to scope to one member (staff see only
+ *  their own; the server enforces this, never the client); omit for all staff
+ *  (admin). Newest first. */
+export async function listStaffPayments(staffId?: string): Promise<StaffPayment[]> {
+  const p = await pool();
+  const { rows } = staffId
+    ? await p.query(
+        `SELECT staff_id, staff_name, expense_id, pay_date, pay_type, amount, paid, paid_at, note
+           FROM ops.v_staff_payments WHERE staff_id = $1 ORDER BY pay_date DESC, pay_type`,
+        [staffId],
+      )
+    : await p.query(
+        `SELECT staff_id, staff_name, expense_id, pay_date, pay_type, amount, paid, paid_at, note
+           FROM ops.v_staff_payments ORDER BY staff_name, pay_date DESC, pay_type`,
+      );
+  return rows.map((r) => ({
+    staffId: r.staff_id as string,
+    staffName: r.staff_name as string,
+    expenseId: r.expense_id as string,
+    payDate: (r.pay_date as string) ?? "",
+    payType: r.pay_type as string,
+    amount: num(r.amount),
+    paid: Boolean(r.paid),
+    paidAt: (r.paid_at as string) ?? null,
+    note: (r.note as string) ?? null,
+  }));
+}
+
+/** Per-staff pay summary (earned / paid / owed) from ops.v_staff_payment_summary.
+ *  Scoped to one member when staffId is given, else every staff (admin). */
+export async function getStaffPaymentSummary(staffId?: string): Promise<StaffPaymentSummary[]> {
+  const p = await pool();
+  const { rows } = staffId
+    ? await p.query(
+        `SELECT staff_id, staff_name, total_earned, total_paid, balance_owed, last_paid_at
+           FROM ops.v_staff_payment_summary WHERE staff_id = $1`,
+        [staffId],
+      )
+    : await p.query(
+        `SELECT staff_id, staff_name, total_earned, total_paid, balance_owed, last_paid_at
+           FROM ops.v_staff_payment_summary ORDER BY balance_owed DESC, staff_name`,
+      );
+  return rows.map((r) => ({
+    staffId: r.staff_id as string,
+    staffName: r.staff_name as string,
+    totalEarned: num(r.total_earned),
+    totalPaid: num(r.total_paid),
+    balanceOwed: num(r.balance_owed),
+    lastPaidAt: (r.last_paid_at as string) ?? null,
+  }));
+}
+
+export interface ProductCosting {
+  productId: string;
+  sku: string;
+  name: string;
+  stdCost: number | null;
+  lastBakeCost: number | null;
+  lastBakeAt: string | null;
+  trailing3Avg: number | null;
+  bakes: number;
+}
+
+/** Per-product cost provenance (Audit H4) from ops.v_product_costing: current
+ *  std_cost vs the last in-system bake's per-unit cost, the trailing-3-bake
+ *  average std_cost rolls to, and the bake count. `bakes === 0` ⇒ std_cost is
+ *  still the Notion seed (never baked in-system) — the guardrail runs on an
+ *  unverified cost. */
+export async function listProductCosting(): Promise<ProductCosting[]> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT product_id, sku, name, std_cost, last_bake_cost, last_bake_at, trailing3_avg, bakes
+       FROM ops.v_product_costing`,
+  );
+  return rows.map((r) => ({
+    productId: r.product_id as string,
+    sku: r.sku as string,
+    name: r.name as string,
+    stdCost: r.std_cost == null ? null : num(r.std_cost),
+    lastBakeCost: r.last_bake_cost == null ? null : num(r.last_bake_cost),
+    lastBakeAt: (r.last_bake_at as string) ?? null,
+    trailing3Avg: r.trailing3_avg == null ? null : num(r.trailing3_avg),
+    bakes: num(r.bakes),
   }));
 }
 

@@ -32,7 +32,8 @@ export function monthRange(d = new Date()): { start: string; end: string; label:
 }
 
 export interface PnL {
-  revenue: number; // net of channel fees
+  revenue: number; // GROSS revenue (channel/PG fees are a separate line — Audit H7)
+  fees: number; // channel commission + payment-gateway fees (was netted into revenue)
   cogs: number; // inventory-driven, made-cost of goods sold
   grossProfit: number;
   labor: number; // non-production payroll (production labor sits in COGS — decision B)
@@ -48,6 +49,7 @@ export interface PnL {
 
 export function assemblePnL(parts: {
   revenue: number;
+  fees: number;
   cogs: number;
   labor: number;
   opex: number;
@@ -60,7 +62,7 @@ export function assemblePnL(parts: {
 }): PnL {
   const grossProfit = parts.revenue - parts.cogs;
   const operatingProfit =
-    grossProfit - parts.labor - parts.opex - parts.marketing - parts.samples - parts.rnd - parts.waste - parts.shrinkage - parts.depreciation;
+    grossProfit - parts.fees - parts.labor - parts.opex - parts.marketing - parts.samples - parts.rnd - parts.waste - parts.shrinkage - parts.depreciation;
   return { ...parts, grossProfit, operatingProfit };
 }
 
