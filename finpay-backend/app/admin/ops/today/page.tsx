@@ -108,8 +108,9 @@ export default async function OpsTodayPage() {
   // Prep banner counts — reuse the sales-orders projection (holds both channel
   // and website rows) so no extra store call: orders still in preparing, and
   // website pickups scheduled for today.
-  const preparingCount = salesOrders.filter((o) => o.fulfillmentStatus === "preparing" && o.status !== "cancelled").length;
-  const pickupsToday = salesOrders.filter((o) => o.channel === "website" && o.pickupDate === today && o.fulfillmentStatus !== "picked_up").length;
+  const DEAD = ["cancelled", "refunded", "expired"];
+  const preparingCount = salesOrders.filter((o) => o.fulfillmentStatus === "preparing" && !DEAD.includes(o.status)).length;
+  const pickupsToday = salesOrders.filter((o) => o.channel === "website" && o.pickupDate === today && o.fulfillmentStatus !== "picked_up" && !DEAD.includes(o.status)).length;
 
   // Alert count = every underlying alert (each reorder row / offender counts 1).
   const alertCount = drift.length + belowFloor.length + reorder.length + expiring.length + overdue.length;

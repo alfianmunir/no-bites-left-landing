@@ -1737,7 +1737,7 @@ export async function listPreparingItems(): Promise<PrepItemRow[]> {
        FROM ops.sales_orders so
        JOIN ops.sales_lines sl ON sl.sales_order_id = so.id
        JOIN ops.products pr ON pr.id = sl.product_id
-      WHERE so.fulfillment_status = 'preparing' AND so.status <> 'cancelled'
+      WHERE so.fulfillment_status = 'preparing' AND so.status NOT IN ('cancelled', 'refunded', 'expired')
       GROUP BY pr.id, pr.sku, pr.name
       ORDER BY qty DESC, pr.name`,
   );
@@ -2842,7 +2842,7 @@ export async function getDemandVelocity(days = 28): Promise<DemandRow[]> {
        LEFT JOIN ops.sales_lines sl ON sl.product_id = pr.id
        LEFT JOIN ops.sales_orders so ON so.id = sl.sales_order_id
             AND so.ordered_at >= (now() - ($1 || ' days')::interval)
-            AND so.status <> 'cancelled'
+            AND so.status NOT IN ('cancelled', 'refunded', 'expired')
       WHERE pr.active
       GROUP BY pr.sku, pr.name
       ORDER BY units DESC, pr.sku`,

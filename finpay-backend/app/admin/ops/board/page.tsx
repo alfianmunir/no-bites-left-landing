@@ -57,7 +57,7 @@ export default async function OpsBoardPage() {
   const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
 
   const active = orders.filter(
-    (o) => o.fulfillmentStatus !== "delivered" && o.fulfillmentStatus !== "picked_up" && o.status !== "cancelled",
+    (o) => o.fulfillmentStatus !== "delivered" && o.fulfillmentStatus !== "picked_up" && !["cancelled", "refunded", "expired"].includes(o.status),
   );
   const byStage = (k: string) => active.filter((o) => o.fulfillmentStatus === k);
 
