@@ -320,24 +320,30 @@ export interface FinishedGoodsBalanceRow {
 export async function listFinishedGoodsBalance(): Promise<FinishedGoodsBalanceRow[]> {
   const p = await pool();
   const { rows } = await p.query(
+    // All active product SKUs — including ones at 0 or negative on-hand — so the
+    // finished-goods list is the full catalog, not just what's currently stocked.
     `SELECT pr.id, pr.name,
-            sum(sm.qty) AS qty_on_hand,
-            sum(sm.qty * sm.unit_cost) AS stock_value
+            COALESCE(sum(sm.qty), 0) AS qty_on_hand,
+            COALESCE(sum(sm.qty * sm.unit_cost), 0) AS stock_value
        FROM ops.products pr
-       JOIN ops.stock_moves sm ON sm.product_id = pr.id
+       LEFT JOIN ops.stock_moves sm ON sm.product_id = pr.id
+      WHERE pr.active
       GROUP BY pr.id, pr.name
-     HAVING sum(sm.qty) > 0.0001
       ORDER BY pr.name ASC`,
   );
   return rows.map((r) => {
     const qtyOnHand = num(r.qty_on_hand);
-    const stockValue = num(r.stock_value);
+    const rawValue = num(r.stock_value);
+    // Only positive on-hand carries inventory value. At/below zero → Rp 0, so a
+    // sold-out or oversold SKU doesn't show (or total) a phantom moving-average
+    // residual.
+    const hasStock = qtyOnHand > 0.0001;
     return {
       productId: r.id as string,
       name: r.name as string,
       qtyOnHand,
-      avgCost: qtyOnHand > 0 ? stockValue / qtyOnHand : 0,
-      stockValue,
+      avgCost: hasStock ? rawValue / qtyOnHand : 0,
+      stockValue: hasStock ? rawValue : 0,
     };
   });
 }
