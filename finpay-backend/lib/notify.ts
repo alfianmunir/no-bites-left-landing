@@ -143,6 +143,26 @@ export async function sendActivityWhatsapp(message: string): Promise<{ sent: boo
   return { sent: false, reason: "no_provider" };
 }
 
+/**
+ * Tell the customer their order was cancelled + a manual refund is coming (the
+ * refund itself is processed outside the app — we collect bank details over
+ * WhatsApp). Includes the admin-entered cancellation reason. Best-effort email.
+ */
+export async function notifyCustomerCancelled(order: Order, reason: string): Promise<void> {
+  const name = order.customer.firstName || "there";
+  const html = `
+    <h2>Your order was cancelled</h2>
+    <p>Hi ${escapeHtml(name)},</p>
+    <p>We are deeply sorry, but we have to cancel your order <b>${order.id}</b> on nobitesleft.com due to <b>${escapeHtml(reason)}</b>.</p>
+    <p>A full refund of <b>${rupiah(order.amount)}</b> will be processed. We&apos;ll reach out on WhatsApp to collect your bank account number so we can send it across.</p>
+    <p>Thank you for your understanding. — No Bites Left</p>
+  `;
+  await send(order.customer.email, `Your No Bites Left order ${order.id} was cancelled`, html, "customer_notify_cancelled", {
+    orderId: order.id,
+    to: order.customer.email,
+  });
+}
+
 export async function notifyCustomerReady(order: Order): Promise<void> {
   const pickup = order.pickup_date ? formatPickupDate(order.pickup_date) : "your pickup date";
   const html = `
