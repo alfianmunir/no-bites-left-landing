@@ -24,9 +24,18 @@ const ADVANCE_LABEL: Partial<Record<OrderStatus, string>> = {
 const PROGRESS: OrderStatus[] = ["PAID", "BAKING", "READY_FOR_PICKUP", "PICKED_UP"];
 const PROGRESS_LABELS = ["Preparing", "Packed", "Ready", "Picked up"];
 
+// Normalize an Indonesian mobile to international digits for wa.me (leading 0 → 62).
+function waIntl(phone: string): string {
+  let d = phone.replace(/[^0-9]/g, "");
+  if (d.startsWith("0")) d = "62" + d.slice(1);
+  return d;
+}
 function waLink(phone: string): string {
-  const digits = phone.replace(/[^0-9]/g, "");
-  return `https://wa.me/${digits}`;
+  return `https://wa.me/${waIntl(phone)}`;
+}
+/** wa.me deep link with a pre-typed message. */
+function waLinkText(phone: string, message: string): string {
+  return `https://wa.me/${waIntl(phone)}?text=${encodeURIComponent(message)}`;
 }
 
 export default function AdminOrderDetail({
@@ -42,7 +51,9 @@ export default function AdminOrderDetail({
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
-  const [confirmingRefund, setConfirmingRefund] = useState(false);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelDone, setCancelDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isModal = variant === "modal";
 
@@ -71,6 +82,40 @@ export default function AdminOrderDetail({
   const progressIndex = PROGRESS.indexOf(order.status);
   const phone = order.customer.mobilePhone;
   const customerName = `${order.customer.firstName} ${order.customer.lastName}`.trim();
+  const firstName = order.customer.firstName || customerName || "there";
+
+  // The exact WhatsApp script the admin sends after cancelling (refund handled
+  // outside the app — we ask for the customer's bank account here).
+  const cancelWaMessage = `Hi ${firstName}! We are deeply sorry that we have to cancel your order in nobitesleft.com due to ${cancelReason.trim() || "…"}. Please inform your bank account number so we can process the refund. Thank you for your understanding.`;
+
+  async function submitCancelRefund() {
+    if (!cancelReason.trim()) {
+      setError("Please enter a cancellation reason.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/admin/orders/${order.id}/cancel-refund`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: cancelReason.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "cancellation failed");
+        setBusy(false);
+        return;
+      }
+      router.refresh(); // parent list picks up the REFUNDED status
+      setConfirmingCancel(false);
+      setCancelDone(true); // keep the modal open to show the WhatsApp CTA
+      setBusy(false);
+    } catch {
+      setError("request failed");
+      setBusy(false);
+    }
+  }
 
   const body = (
     <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 12, flex: 1 }}>
@@ -137,34 +182,71 @@ export default function AdminOrderDetail({
             className="btn-outline"
             style={{ flex: 1, borderColor: "rgba(226,64,38,0.4)", color: "var(--red)" }}
             disabled={busy}
-            onClick={() => setConfirmingRefund(true)}
+            onClick={() => { setCancelReason(""); setError(null); setConfirmingCancel(true); }}
           >
-            Refund
+            Cancel &amp; refund
           </button>
         )}
       </div>
     </div>
   );
 
-  const refundConfirm = confirmingRefund && (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(29,19,10,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 60 }}>
-      <div style={{ width: "100%", maxWidth: 340, background: "#fff", borderRadius: 20, padding: 22 }}>
-        <div style={{ fontWeight: 900, fontSize: 17, color: "var(--red)" }}>Refund this order?</div>
-        <div style={{ fontSize: 13.5, color: "var(--soft)", marginTop: 8, lineHeight: 1.5 }}>
-          This can&apos;t be undone. {rupiah(order.amount)} will be refunded to the customer&apos;s original payment method.
+  // Cancel + manual refund: enter a reason → order REFUNDED, ledger reversed,
+  // customer emailed. Refund money is sent outside the app.
+  const cancelDialog = confirmingCancel && (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(29,19,10,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 60 }} onClick={(e) => { e.stopPropagation(); if (!busy) setConfirmingCancel(false); }}>
+      <div style={{ width: "100%", maxWidth: 380, background: "#fff", borderRadius: 20, padding: 22 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontWeight: 900, fontSize: 17, color: "var(--red)" }}>Cancel &amp; refund this order?</div>
+        <div style={{ fontSize: 13, color: "var(--soft)", marginTop: 8, lineHeight: 1.5 }}>
+          Marks {order.id} <b>refunded</b> ({rupiah(order.amount)}), returns its stock and reverses the sale in the ledger, and emails the customer. The refund itself is processed outside the app.
         </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-          <button className="btn-outline" style={{ flex: 1 }} onClick={() => setConfirmingRefund(false)}>Cancel</button>
+        <label style={{ display: "block", fontSize: 11.5, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.03em", margin: "14px 0 4px" }}>Cancellation reason</label>
+        <textarea
+          value={cancelReason}
+          onChange={(e) => setCancelReason(e.target.value)}
+          placeholder="e.g. an ingredient sold out"
+          rows={3}
+          maxLength={300}
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1.5px solid var(--line)", fontSize: 13.5, fontFamily: "inherit", color: "var(--ink)", boxSizing: "border-box", resize: "vertical" }}
+        />
+        {error && <div style={{ color: "var(--red)", fontSize: 12.5, fontWeight: 700, marginTop: 6 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+          <button className="btn-outline" style={{ flex: 1 }} disabled={busy} onClick={() => setConfirmingCancel(false)}>Back</button>
           <button
-            style={{ flex: 1, padding: 12, borderRadius: 12, background: "var(--red)", color: "#fff", fontWeight: 800, fontSize: 13.5, border: "none", cursor: "pointer" }}
-            disabled={busy}
-            onClick={() => {
-              setConfirmingRefund(false);
-              call("refund");
-            }}
+            style={{ flex: 1, padding: 12, borderRadius: 12, background: busy || !cancelReason.trim() ? "var(--soft)" : "var(--red)", color: "#fff", fontWeight: 800, fontSize: 13.5, border: "none", cursor: busy || !cancelReason.trim() ? "default" : "pointer" }}
+            disabled={busy || !cancelReason.trim()}
+            onClick={submitCancelRefund}
           >
-            Confirm refund
+            {busy ? "Cancelling…" : "Confirm cancellation"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // After cancelling: the WhatsApp CTA, pre-typed with the apology + refund ask.
+  const cancelSuccess = cancelDone && (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(29,19,10,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 60 }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ width: "100%", maxWidth: 380, background: "#fff", borderRadius: 20, padding: 22 }}>
+        <div style={{ fontWeight: 900, fontSize: 17, color: "var(--choco)" }}>Order cancelled &amp; refunded</div>
+        <div style={{ fontSize: 13, color: "var(--soft)", marginTop: 8, lineHeight: 1.5 }}>
+          {customerName || "The customer"} has been emailed. Message them on WhatsApp to collect their bank account for the refund:
+        </div>
+        <div style={{ margin: "12px 0", padding: "10px 12px", borderRadius: 12, background: "var(--surface2)", border: "1.5px solid var(--line)", fontSize: 12.5, color: "var(--ink)", lineHeight: 1.5, fontStyle: "italic" }}>
+          {cancelWaMessage}
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+          <button className="btn-outline" style={{ flex: 1 }} onClick={() => { setCancelDone(false); if (isModal) onClose?.(); }}>Done</button>
+          {phone && (
+            <a
+              href={waLinkText(phone, cancelWaMessage)}
+              target="_blank"
+              rel="noreferrer"
+              style={{ flex: 1, textAlign: "center", padding: 12, borderRadius: 12, background: "var(--green)", color: "#fff", fontWeight: 800, fontSize: 13.5, textDecoration: "none" }}
+            >
+              WhatsApp customer
+            </a>
+          )}
         </div>
       </div>
     </div>
@@ -188,7 +270,8 @@ export default function AdminOrderDetail({
           {body}
           {footer}
         </div>
-        {refundConfirm}
+        {cancelDialog}
+        {cancelSuccess}
       </div>
     );
   }
@@ -202,7 +285,8 @@ export default function AdminOrderDetail({
       </div>
       {body}
       {footer}
-      {refundConfirm}
+      {cancelDialog}
+        {cancelSuccess}
     </main>
   );
 }
