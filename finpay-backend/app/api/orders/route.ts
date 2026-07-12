@@ -12,7 +12,8 @@ import { getStore } from "@/lib/db";
 import { getMenuStore } from "@/lib/menuStore";
 import { getCourierOption } from "@/lib/courier";
 import { isValidDeliveryDate } from "@/lib/deliveryDate";
-import { isValidPickupDate } from "@/lib/pickupDate";
+import { isValidPickupDate } from "@/lib/pickup";
+import { getPickupLocationStore } from "@/lib/pickupLocationStore";
 import { FULFILLMENT } from "@/lib/fulfillment";
 import { generateOrderId } from "@/lib/orders";
 import type { OrderItem, Customer, DeliveryAddress, CourierChoice } from "@/lib/orders";
@@ -35,6 +36,7 @@ interface OrderRequestBody {
   items?: unknown;
   customer?: unknown;
   pickupDate?: unknown; // v1 PICKUP
+  pickupLocationId?: unknown; // v1 multi-location
   // v2 DELIVERY (ignored while FULFILLMENT === "PICKUP"):
   deliveryAddress?: unknown;
   courierCode?: unknown;
@@ -118,6 +120,8 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   // --- fulfillment: PICKUP (v1) vs DELIVERY (v2, dormant behind the flag) ---
   let pickupDate: string | null = null;
+  let pickupLocationId: string | null = null;
+  let pickupLocation: { name: string; area: string } | null = null;
   let deliveryDate: string | null = null;
   let address: DeliveryAddress | null = null;
   let courier: CourierChoice | null = null;
@@ -143,11 +147,25 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (!dd || !isValidDeliveryDate(dd)) return badRequest(`invalid deliveryDate: ${dd}`);
     deliveryDate = dd;
   } else {
-    // v1 PICKUP path — pickup date only (>= H+3). No address, no courier, no
-    // delivery fee (E2E PRD §1a). Total is items only.
+    // v1 PICKUP path — pickup location + rule-aware pickup date. No address, no
+    // courier, no delivery fee (E2E PRD §1a). Total is items only. The server
+    // never trusts the client date/location — it re-resolves the location and
+    // re-validates the date against that location's rule + the lead floor.
+    const locId = typeof body.pickupLocationId === "string" ? body.pickupLocationId.trim() : "";
+    const locStore = getPickupLocationStore();
+    await locStore.init();
+    const loc = await locStore.get(locId);
+    if (!loc || !loc.active || loc.rule.type === "external") {
+      return badRequest(`invalid pickupLocationId: ${locId}`);
+    }
+    const settings = await locStore.getSettings();
     const pd = typeof body.pickupDate === "string" ? body.pickupDate.trim() : "";
-    if (!pd || !isValidPickupDate(pd)) return badRequest(`invalid pickupDate: ${pd}`);
+    if (!pd || !isValidPickupDate(loc.rule, pd, new Date(), settings.sameDayCutoffWib)) {
+      return badRequest(`invalid pickupDate: ${pd}`);
+    }
     pickupDate = pd;
+    pickupLocationId = loc.id;
+    pickupLocation = { name: loc.name, area: loc.area };
   }
 
   // --- validate cart & recompute amount server-side ---
@@ -204,6 +222,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     status: "PENDING",
     fulfillment: FULFILLMENT,
     pickupDate,
+    pickupLocationId,
+    pickupLocation,
     deliveryAddress: address,
     deliveryDate,
     courier,

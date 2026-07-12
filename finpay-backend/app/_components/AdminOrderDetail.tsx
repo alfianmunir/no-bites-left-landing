@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import type { Order, OrderStatus } from "@/lib/orders";
 import { nextFulfillmentStatus, canTransition } from "@/lib/orders";
-import { PICKUP_LOCATION } from "@/lib/fulfillment";
 
 function rupiah(n: number): string {
   return "Rp " + n.toLocaleString("id-ID");
@@ -135,7 +134,7 @@ export default function AdminOrderDetail({
         {order.items.map((it) => (
           <div key={it.sku}>{it.qty}× {it.name}</div>
         ))}
-        <div style={{ color: "var(--soft)", marginTop: 4 }}>Pickup at {PICKUP_LOCATION.name}</div>
+        <div style={{ color: "var(--soft)", marginTop: 4 }}>Pickup at {order.pickup_location?.name ?? "—"}{order.pickup_location?.area ? ` · ${order.pickup_location.area}` : ""}</div>
         <div style={{ color: "var(--soft)" }}>Pickup date: {order.pickup_date ?? "—"} · {rupiah(order.amount)}</div>
       </div>
 

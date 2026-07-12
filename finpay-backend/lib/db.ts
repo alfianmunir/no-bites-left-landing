@@ -31,6 +31,8 @@ export interface NewOrderInput {
   status: OrderStatus;
   fulfillment: Fulfillment;
   pickupDate: string | null;
+  pickupLocationId?: string | null; // multi-location v1
+  pickupLocation?: { name: string; area: string } | null; // denormalized display snapshot
   userId: string | null;
   // v2 delivery (null for PICKUP orders)
   deliveryAddress?: DeliveryAddress | null;
@@ -46,6 +48,9 @@ export interface OrderUpdate {
   finpay_reference?: string | null;
   redirect_url?: string | null;
   expiry_link?: string | null;
+  // Pickup date can be re-stamped by the webhook when the async paid-time floor
+  // pushes it out (README §6 auto-bump). Column exists on both stores.
+  pickup_date?: string | null;
 }
 
 export interface OrderStore {
@@ -120,6 +125,8 @@ class FileStore implements OrderStore {
         status: input.status,
         fulfillment: input.fulfillment,
         pickup_date: input.pickupDate ?? null,
+        pickup_location_id: input.pickupLocationId ?? null,
+        pickup_location: input.pickupLocation ?? null,
         finpay_reference: null,
         redirect_url: null,
         expiry_link: null,
@@ -302,6 +309,8 @@ class PostgresStore implements OrderStore {
       status: deriveOrderStatus(r),
       fulfillment: ((r.fulfillment as Fulfillment) ?? "PICKUP"),
       pickup_date: (r.pickup_date as string) ?? null,
+      pickup_location_id: (r.pickup_location_id as string) ?? null,
+      pickup_location: (r.pickup_location as { name: string; area: string } | null) ?? null,
       finpay_reference: (r.finpay_reference as string) ?? null,
       redirect_url: (r.redirect_url as string) ?? null,
       expiry_link: r.expiry_link ? new Date(r.expiry_link as string).toISOString() : null,
@@ -334,8 +343,9 @@ class PostgresStore implements OrderStore {
     const { rows } = await pool.query(
       `INSERT INTO ops.sales_orders
          (channel_id, order_no, customer, customer_ref, user_id, items, amount, pickup_date,
+          pickup_location_id, pickup_location,
           fulfillment, payment_status, status, fulfillment_status, status_history)
-       VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15::jsonb)
        RETURNING *`,
       [
         channelId,
@@ -346,6 +356,8 @@ class PostgresStore implements OrderStore {
         JSON.stringify(input.items),
         input.amount,
         input.pickupDate ?? null,
+        input.pickupLocationId ?? null,
+        input.pickupLocation ? JSON.stringify(input.pickupLocation) : null,
         input.fulfillment,
         c.payment_status ?? "unpaid",
         c.status ?? "pending",

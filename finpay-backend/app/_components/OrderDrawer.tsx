@@ -9,9 +9,12 @@ import { useEffect, useState } from "react";
 import { useCart } from "@/lib/cart/CartContext";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useOrderFlow, type OrderScreen } from "@/lib/order-flow/OrderFlowContext";
-import { PICKUP_LOCATION, SUPPORT_WHATSAPP } from "@/lib/fulfillment";
-import { formatPickupDate } from "@/lib/pickupDate";
+import { SUPPORT_WHATSAPP } from "@/lib/fulfillment";
+import { formatPickupDate, ruleLabel, nextPickupDates, type PickupLocation, type PickupLocationSummary } from "@/lib/pickup";
 import type { Order, OrderStatus, PublicOrder } from "@/lib/orders";
+
+const WEEKDAY_HEAD = ["M", "T", "W", "T", "F", "S", "S"];
+const PICKUP_FALLBACK: PickupLocationSummary = { name: "No Bites Left · Pickup", area: "" };
 
 function rupiah(n: number): string {
   return "Rp " + n.toLocaleString("id-ID");
@@ -121,69 +124,183 @@ function SignInScreen() {
   );
 }
 
-// ---------------------------------------------------------------- Pickup date
-function PickupLocationCard() {
+// ---------------------------------------------------------------- Pickup location
+function PickupLocationCard({ place }: { place: PickupLocationSummary }) {
   return (
     <div style={{ background: "var(--surface)", border: "1.5px solid var(--line)", borderRadius: 16, padding: 14, display: "flex", gap: 12 }}>
       <div style={{ width: 38, height: 38, borderRadius: 12, background: "#fff3e2", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>🛍️</div>
       <div>
         <div style={{ fontSize: 11, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.05em" }}>PICK UP AT</div>
-        <div style={{ fontWeight: 800, fontSize: 14.5 }}>{PICKUP_LOCATION.name}</div>
-        <div style={{ fontSize: 13, color: "var(--soft)" }}>{PICKUP_LOCATION.address}</div>
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--choco)", marginTop: 2 }}>{PICKUP_LOCATION.hours}</div>
+        <div style={{ fontWeight: 800, fontSize: 14.5 }}>{place.name}</div>
+        {place.area && <div style={{ fontSize: 13, color: "var(--soft)" }}>{place.area}</div>}
       </div>
     </div>
   );
 }
 
+// External locations (Others) don't have a calendar — they open a sheet with
+// Shopee / GrabFood deep links and never advance to date/review.
+function ExternalSheet({ location, onClose }: { location: PickupLocation; onClose: () => void }) {
+  const rule = location.rule;
+  const links = rule.type === "external" ? rule : { shopee: undefined, grab: undefined };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(29,19,10,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 40 }} onClick={onClose}>
+      <div style={{ width: "100%", maxWidth: 460, background: "var(--surface)", borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: "22px 20px 26px", display: "flex", flexDirection: "column", gap: 12 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ width: 40, height: 4, borderRadius: 99, background: "var(--line)", alignSelf: "center" }} />
+        <div className="font-display" style={{ fontSize: 20, textAlign: "center" }}>Order via marketplace</div>
+        <div style={{ fontSize: 13, color: "var(--soft)", textAlign: "center", maxWidth: 300, alignSelf: "center" }}>
+          {location.name} is fulfilled through Shopee / GrabFood — tap a store to continue there.
+        </div>
+        {links.shopee && (
+          <a href={links.shopee} target="_blank" rel="noopener noreferrer" className="btn-primary" style={{ textAlign: "center", textDecoration: "none", background: "#ee4d2d" }}>
+            🛍️ Order on Shopee
+          </a>
+        )}
+        {links.grab && (
+          <a href={links.grab} target="_blank" rel="noopener noreferrer" className="btn-primary" style={{ textAlign: "center", textDecoration: "none", background: "#00b14f" }}>
+            🛵 Order on GrabFood
+          </a>
+        )}
+        <button className="btn-outline" onClick={onClose}>Back to pickup spots</button>
+      </div>
+    </div>
+  );
+}
+
+function LocationScreen() {
+  const flow = useOrderFlow();
+  const [externalOpen, setExternalOpen] = useState<PickupLocation | null>(null);
+  const selected = flow.selectedLocation;
+
+  const onContinue = () => {
+    if (!selected) return;
+    if (selected.rule.type === "external") setExternalOpen(selected);
+    else flow.go("date");
+  };
+
+  return (
+    <div className="nbl-screen">
+      <Head title="Choose a pickup spot" onBack={() => flow.go("cart")} />
+      <div className="nbl-screen-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ background: "var(--surface2)", border: "1.5px solid var(--line)", borderRadius: 14, padding: 12, fontSize: 12.5, color: "var(--soft)" }}>
+          🛍️ Pick where you&apos;ll collect your box — each spot has its own available days.
+        </div>
+        {flow.locations.length === 0 ? (
+          <div style={{ textAlign: "center", color: "var(--soft)", fontSize: 13.5, padding: 24 }}>Loading pickup spots…</div>
+        ) : (
+          flow.locations.map((loc) => {
+            const isSel = loc.id === flow.selectedLocationId;
+            const external = loc.rule.type === "external";
+            return (
+              <button
+                key={loc.id}
+                onClick={() => flow.setSelectedLocation(loc.id)}
+                style={{
+                  display: "flex", gap: 12, alignItems: "center", textAlign: "left",
+                  background: "var(--surface)",
+                  border: isSel ? "1.5px solid var(--orange)" : "1.5px solid var(--line)",
+                  borderRadius: 16, padding: 13, cursor: "pointer",
+                }}
+              >
+                <div style={{ width: 34, height: 34, borderRadius: 10, background: "#fff3e2", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, flexShrink: 0 }}>{external ? "🛒" : "📍"}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 800, fontSize: 14.5 }}>{loc.name}</div>
+                  <div style={{ fontSize: 12.5, color: "var(--soft)" }}>{loc.area}</div>
+                  <span className="pill" style={{ marginTop: 5, background: "var(--surface2)", border: "1.5px solid var(--line)", fontSize: 10.5, color: "var(--choco)" }}>{ruleLabel(loc.rule)}</span>
+                </div>
+                <div style={{ width: 22, height: 22, borderRadius: "50%", flexShrink: 0, background: isSel ? "var(--orange)" : "transparent", border: isSel ? "none" : "1.5px solid var(--line)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>{isSel ? "✓" : ""}</div>
+              </button>
+            );
+          })
+        )}
+      </div>
+      <div className="nbl-screen-foot">
+        <button className="btn-primary" disabled={!selected} onClick={onContinue}>
+          {selected?.rule.type === "external" ? "Continue to marketplace" : "Pick a date"}
+        </button>
+      </div>
+      {externalOpen && <ExternalSheet location={externalOpen} onClose={() => setExternalOpen(null)} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Pickup date
+function monthLabel(monthKey: string): string {
+  const [y, m] = monthKey.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
 function DateScreen() {
   const flow = useOrderFlow();
   const selected = flow.pickupDate;
+  const loc = flow.selectedLocation;
+  const place: PickupLocationSummary = loc ? { name: loc.name, area: loc.area } : PICKUP_FALLBACK;
+  const isTwin = loc?.rule.type === "twin";
+  const twinDates = isTwin && loc ? nextPickupDates(loc.rule, 2, new Date(), flow.settings.sameDayCutoffWib) : [];
+
   return (
     <div className="nbl-screen">
-      <Head title="Choose your pickup date" onBack={() => flow.go("cart")} />
+      <Head title="Choose your pickup date" onBack={() => flow.go("location")} />
       <div className="nbl-screen-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ background: "var(--surface2)", border: "1.5px solid var(--line)", borderRadius: 14, padding: 12, fontSize: 12.5, color: "var(--soft)" }}>
-          🧑‍🍳 Every box is baked fresh to order — the earliest pickup is 3 days out.
+          🧑‍🍳 Baked fresh to order — pay before {flow.settings.sameDayCutoffWib} WIB and the earliest pickup is the next day, otherwise the day after.
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+
+        {isTwin && (
+          <div style={{ background: "#fff3e2", border: "1.5px solid var(--orange)", borderRadius: 14, padding: 12, fontSize: 12.5, color: "var(--choco)" }}>
+            ✨ {loc?.name} only opens on twin dates (01/01, 02/02…).{twinDates.length ? ` Next open: ${twinDates.map(formatPickupDate).join(" · ")}.` : ""}
+          </div>
+        )}
+
+        {/* Month navigator */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <button className="nbl-iconbtn" onClick={flow.prevMonth} aria-label="previous month">‹</button>
+          <div style={{ fontWeight: 800, fontSize: 14 }}>{monthLabel(flow.month)}</div>
+          <button className="nbl-iconbtn" onClick={flow.nextMonth} aria-label="next month">›</button>
+        </div>
+
+        {/* Weekday header (Mon-start) */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+          {WEEKDAY_HEAD.map((w, i) => (
+            <div key={i} style={{ textAlign: "center", fontSize: 10.5, fontWeight: 800, color: "var(--soft)" }}>{w}</div>
+          ))}
+        </div>
+
+        {/* 6×7 month grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
           {flow.pickupWindow.map((d) => {
             const isSel = d.date === selected;
+            if (!d.inMonth) return <div key={d.date} />;
             return (
               <button
                 key={d.date}
                 disabled={d.disabled}
                 onClick={() => flow.setPickupDate(d.date)}
                 style={{
-                  borderRadius: 12,
-                  padding: "10px 0",
-                  border: isSel ? "1.5px solid var(--orange)" : "1.5px solid var(--line)",
-                  background: isSel ? "var(--orange)" : d.disabled ? "var(--surface2)" : "var(--surface)",
-                  color: isSel ? "#fff" : "var(--ink)",
-                  opacity: d.tooSoon ? 0.45 : d.full ? 0.6 : 1,
+                  aspectRatio: "1 / 1",
+                  borderRadius: 10,
+                  border: isSel ? "1.5px solid var(--orange)" : d.disabled ? "1.5px solid transparent" : "1.5px solid var(--line)",
+                  background: isSel ? "var(--orange)" : d.disabled ? "transparent" : "var(--surface)",
+                  color: isSel ? "#fff" : d.disabled ? "var(--soft)" : "var(--ink)",
+                  opacity: d.disabled ? 0.4 : 1,
                   cursor: d.disabled ? "default" : "pointer",
+                  fontSize: 14,
+                  fontWeight: isSel ? 900 : 700,
                   display: "flex",
-                  flexDirection: "column",
                   alignItems: "center",
-                  gap: 2,
+                  justifyContent: "center",
                 }}
               >
-                <span style={{ fontSize: 11, fontWeight: 800 }}>{d.weekday}</span>
-                <span style={{ fontSize: 16, fontWeight: 900 }}>{d.day}</span>
-                {d.full && <span style={{ fontSize: 8.5, fontWeight: 900, color: "var(--red)" }}>FULL</span>}
+                {d.day}
               </button>
             );
           })}
         </div>
+
         <div style={{ fontSize: 12, color: "var(--soft)" }}>
-          {selected ? <>Selected: <b style={{ color: "var(--ink)" }}>{formatPickupDate(selected)}</b> · </> : null}
-          earliest is 3 days out · max 30 pcs/item per day
+          {selected ? <>Selected: <b style={{ color: "var(--ink)" }}>{formatPickupDate(selected)}</b></> : "Pick an available day above"}
         </div>
-        <PickupLocationCard />
-        <div style={{ border: "1.5px dashed var(--line)", background: "var(--surface2)", borderRadius: 99, padding: "10px 14px", display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--soft)" }}>
-          🛵 <span><b>Delivery</b> — we&apos;re baking this up next. Pickup only for now.</span>
-          <span className="pill" style={{ marginLeft: "auto", background: "var(--surface)", border: "1.5px solid var(--line)", fontSize: 10 }}>SOON</span>
-        </div>
+        <PickupLocationCard place={place} />
       </div>
       <div className="nbl-screen-foot">
         <button className="btn-primary" disabled={!selected} onClick={() => flow.go("review")}>Continue</button>
@@ -197,6 +314,7 @@ function ReviewScreen() {
   const { items, subtotal } = useCart();
   const flow = useOrderFlow();
   const total = subtotal; // items only — no delivery fee (v1)
+  const loc = flow.selectedLocation;
   return (
     <div className="nbl-screen" style={{ background: "var(--surface)" }}>
       <Head title="Review order" onBack={() => flow.go("date")} />
@@ -213,9 +331,8 @@ function ReviewScreen() {
         <div style={{ borderTop: "1.5px solid var(--line)", paddingTop: 12 }}>
           <div style={{ fontSize: 11.5, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.06em", marginBottom: 6 }}>PICKUP</div>
           <div style={{ fontSize: 13.5, fontWeight: 700 }}>{flow.pickupDate ? formatPickupDate(flow.pickupDate) : "—"}</div>
-          <div style={{ fontSize: 13, color: "var(--soft)" }}>{PICKUP_LOCATION.name}</div>
-          <div style={{ fontSize: 12.5, color: "var(--soft)" }}>{PICKUP_LOCATION.address}</div>
-          <div style={{ fontSize: 12.5, color: "var(--choco)", fontWeight: 700 }}>{PICKUP_LOCATION.hours}</div>
+          <div style={{ fontSize: 13, color: "var(--soft)" }}>{loc?.name ?? PICKUP_FALLBACK.name}</div>
+          {loc?.area && <div style={{ fontSize: 12.5, color: "var(--soft)" }}>{loc.area}</div>}
         </div>
         <div style={{ borderTop: "1.5px solid var(--line)", paddingTop: 12 }}>
           <label className="field-label">Mobile number for pickup updates</label>
@@ -351,6 +468,7 @@ function StatusScreen() {
   }, [flow.statusOrderId]);
 
   const dateLabel = order?.pickup_date ? formatPickupDate(order.pickup_date) : null;
+  const place: PickupLocationSummary = order?.pickup_location ?? PICKUP_FALLBACK;
   const currentIndex = order ? TIMELINE.findIndex((t) => t.key === order.status) : -1;
 
   return (
@@ -392,7 +510,7 @@ function StatusScreen() {
               <div style={{ fontWeight: 800, fontSize: 14, color: order.status === "READY_FOR_PICKUP" ? "var(--green)" : "var(--choco)" }}>
                 {order.status === "READY_FOR_PICKUP" ? "🛍️ Ready to collect" : "🧑‍🍳 Collect your box"}{dateLabel ? ` on ${dateLabel}` : ""}
               </div>
-              <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>Baked fresh to order · {PICKUP_LOCATION.name}</div>
+              <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>Baked fresh to order · {place.name}</div>
             </div>
             {currentIndex >= 0 && (
               <div style={{ display: "flex", flexDirection: "column" }}>
@@ -413,9 +531,9 @@ function StatusScreen() {
                 })}
               </div>
             )}
-            <PickupLocationCard />
+            <PickupLocationCard place={place} />
             <div style={{ borderTop: "1.5px solid var(--line)", paddingTop: 12, fontSize: 13, color: "var(--soft)" }}>
-              {order.items.reduce((s, i) => s + i.qty, 0)} items · {rupiah(order.amount)} · pickup at {PICKUP_LOCATION.name}
+              {order.items.reduce((s, i) => s + i.qty, 0)} items · {rupiah(order.amount)} · pickup at {place.name}
             </div>
             <a href={`https://wa.me/${SUPPORT_WHATSAPP}?text=${encodeURIComponent(`Hi! I have a question about order ${order.id}`)}`} target="_blank" rel="noreferrer" className="btn-outline" style={{ textAlign: "center", textDecoration: "none", display: "block" }}>
               Problem with your order? WhatsApp us
@@ -431,6 +549,7 @@ function StatusScreen() {
 const SCREENS: Record<OrderScreen, () => React.JSX.Element> = {
   cart: CartScreen,
   signin: SignInScreen,
+  location: LocationScreen,
   date: DateScreen,
   review: ReviewScreen,
   orders: OrdersScreen,

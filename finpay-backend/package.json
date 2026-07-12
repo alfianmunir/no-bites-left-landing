@@ -10,7 +10,8 @@
     "lint": "next lint",
     "db:init": "node --env-file=.env.local --import tsx scripts/db-init.ts",
     "test:phase1": "node --env-file=.env.local --import tsx scripts/test-phase1.ts",
-    "test:phase2": "node --env-file=.env.local --import tsx scripts/test-phase2.ts"
+    "test:phase2": "node --env-file=.env.local --import tsx scripts/test-phase2.ts",
+    "test:pickup": "node --import tsx scripts/test-pickup.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
