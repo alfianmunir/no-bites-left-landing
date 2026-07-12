@@ -18,8 +18,10 @@ import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import { verifyCallbackSignature, checkStatus } from "@/lib/finpay";
 import { mapFinpayStatus } from "@/lib/finpayStatus";
-import { notifyOpsPaid } from "@/lib/notify";
-import { isFinal, canTransition } from "@/lib/orders";
+import { notifyOpsPaid, notifyCustomerPickupMoved } from "@/lib/notify";
+import { isFinal, canTransition, type Order } from "@/lib/orders";
+import { getPickupLocationStore } from "@/lib/pickupLocationStore";
+import { isValidPickupDate, nextPickupDates } from "@/lib/pickup";
 import { logOrder } from "@/lib/log";
 import { realizeWebsiteOrderPayment, opsEnabled } from "@/lib/opsStore";
 
@@ -35,6 +37,40 @@ interface FinpayCallbackBody {
 
 function ack(): NextResponse {
   return NextResponse.json({ responseCode: "2000000" }, { status: 200 });
+}
+
+/**
+ * Payment is async, so the customer's provisional pickup date (picked against
+ * checkout-time `now`) may now be too soon once the money actually lands after
+ * the same-day cutoff (README §6). Re-check the floor against the PAID event
+ * time; if the chosen date is no longer valid, auto-bump to the next valid day,
+ * record it in status_history, and email the customer. Best-effort + defensive:
+ * never throws, never blocks the webhook ack. Returns the (possibly) updated order.
+ */
+async function reconcilePickupDate(order: Order, paidAt: Date): Promise<Order> {
+  try {
+    if (order.fulfillment !== "PICKUP" || !order.pickup_date || !order.pickup_location_id) return order;
+    const locStore = getPickupLocationStore();
+    await locStore.init();
+    const loc = await locStore.get(order.pickup_location_id);
+    if (!loc || loc.rule.type === "external") return order; // nothing to validate against
+    const settings = await locStore.getSettings();
+    const cutoff = settings.sameDayCutoffWib;
+    if (isValidPickupDate(loc.rule, order.pickup_date, paidAt, cutoff)) return order; // still fine
+    const bumped = nextPickupDates(loc.rule, 1, paidAt, cutoff)[0];
+    if (!bumped || bumped === order.pickup_date) return order;
+    const store = getStore();
+    await store.update(order.id, { pickup_date: bumped });
+    // Record the bump on the audit trail via a same-status event note.
+    const withNote = await store.setStatus(order.id, "PAID", "reconciliation", `pickup auto-bumped ${order.pickup_date} → ${bumped} (paid after ${cutoff} WIB)`);
+    logOrder("pickup_auto_bumped", { orderId: order.id, from: order.pickup_date, to: bumped });
+    const updated = withNote ?? { ...order, pickup_date: bumped };
+    await notifyCustomerPickupMoved(updated, bumped);
+    return updated;
+  } catch (e) {
+    logOrder("pickup_reconcile_failed", { orderId: order.id, error: String(e) });
+    return order;
+  }
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -139,7 +175,9 @@ export async function POST(req: Request): Promise<NextResponse> {
   logOrder("callback_processed", { orderId, from: order.status, to: mapped });
 
   if (mapped === "PAID" && updated) {
-    await notifyOpsPaid(updated);
+    // Recompute the pickup floor against the real paid time (may bump the date).
+    const reconciled = await reconcilePickupDate(updated, new Date());
+    await notifyOpsPaid(reconciled);
     // Realize the finance side of the now-paid native order: sales_lines + COGS,
     // finished-goods draw-down, and net cash-in. setStatus above already flipped
     // payment_status=paid; this adds the ledger effect (idempotent). Non-fatal —

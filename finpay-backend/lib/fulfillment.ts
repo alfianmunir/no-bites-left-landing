@@ -13,17 +13,11 @@ export const FULFILLMENT: Fulfillment = "PICKUP";
 export const isPickup = FULFILLMENT === "PICKUP";
 
 /**
- * Single fixed collection point shown at checkout, on the confirmation, and on
- * the order-status page (E2E PRD §1a). NOTE: the design source is inconsistent
- * about the address line — the PICKUP constant says "Apartemen Kebagusan City",
- * some markup says "Jl. Kebagusan Raya No. 12". PRD §12 Q8 flags "confirm the
- * single collection address + hours" as still open — confirm before launch.
+ * Pickup locations are no longer a single fixed const — they live in the
+ * admin-managed `pickup_locations` catalog (lib/pickupLocationStore.ts) and are
+ * resolved per order (multi-location v1, README §3). Each order carries a
+ * denormalized {name, area} snapshot (orders.pickup_location) for display.
  */
-export const PICKUP_LOCATION = {
-  name: "No Bites Left · Kebagusan",
-  address: "Apartemen Kebagusan City, Tower A · Pasar Minggu, Jakarta Selatan",
-  hours: "Every day · 09.00–18.00 WIB",
-} as const;
 
 /** Click-to-chat support number (README §8) — no API, plain wa.me deep link. */
 export const SUPPORT_WHATSAPP = "6281776376636";

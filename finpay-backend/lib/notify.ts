@@ -11,9 +11,14 @@
 import { Resend } from "resend";
 import { env } from "./env";
 import { logOrder } from "./log";
-import { PICKUP_LOCATION } from "./fulfillment";
-import { formatPickupDate } from "./pickupDate";
+import { formatPickupDate } from "./pickup";
 import type { Order } from "./orders";
+
+/** Display name/area for an order's pickup location (denormalized snapshot, with
+ *  a fallback for any legacy order created before the multi-location era). */
+function pickupPlace(order: Order): { name: string; area: string } {
+  return order.pickup_location ?? { name: "No Bites Left · Pickup", area: "" };
+}
 
 const resend = env.resendApiKey ? new Resend(env.resendApiKey) : null;
 
@@ -78,9 +83,10 @@ async function sendResult(to: string, subject: string, html: string, tag: string
 
 export async function notifyOpsPaid(order: Order): Promise<void> {
   const pickup = order.pickup_date ? formatPickupDate(order.pickup_date) : "—";
+  const place = pickupPlace(order);
   const html = `
     <h2>New paid order ${order.id}</h2>
-    <p><b>Pickup:</b> ${pickup} · ${PICKUP_LOCATION.name}</p>
+    <p><b>Pickup:</b> ${pickup} · ${escapeHtml(place.name)}${place.area ? ` · ${escapeHtml(place.area)}` : ""}</p>
     <p><b>Total:</b> ${rupiah(order.amount)}</p>
     <p><b>Items:</b> ${itemsList(order)}</p>
     <p><b>Customer:</b> ${order.customer.firstName} ${order.customer.lastName} · ${order.customer.mobilePhone} · ${order.customer.email}</p>
@@ -165,15 +171,38 @@ export async function notifyCustomerCancelled(order: Order, reason: string): Pro
 
 export async function notifyCustomerReady(order: Order): Promise<void> {
   const pickup = order.pickup_date ? formatPickupDate(order.pickup_date) : "your pickup date";
+  const place = pickupPlace(order);
   const html = `
     <h2>Your order is ready to collect 🛍️</h2>
     <p>Order <b>${order.id}</b> is baked fresh and ready for pickup.</p>
     <p><b>Collect on:</b> ${pickup}</p>
-    <p><b>${PICKUP_LOCATION.name}</b><br/>${PICKUP_LOCATION.address}<br/>${PICKUP_LOCATION.hours}</p>
+    <p><b>${escapeHtml(place.name)}</b>${place.area ? `<br/>${escapeHtml(place.area)}` : ""}</p>
     <p>See you soon! — No Bites Left</p>
   `;
   await send(order.customer.email, `Your No Bites Left order is ready to collect 🛍️`, html, "customer_notify_ready", {
     orderId: order.id,
+    to: order.customer.email,
+  });
+}
+
+/**
+ * Payment landed after the same-day cutoff, so the earliest valid pickup date
+ * moved out (H+1 → H+2 + rule). Tell the customer their pickup date was bumped
+ * (README §6 auto-bump). Best-effort email.
+ */
+export async function notifyCustomerPickupMoved(order: Order, newDate: string): Promise<void> {
+  const name = order.customer.firstName || "there";
+  const place = pickupPlace(order);
+  const html = `
+    <h2>Your pickup date was updated</h2>
+    <p>Hi ${escapeHtml(name)},</p>
+    <p>Thanks for your payment on order <b>${order.id}</b>! Because it came through a little later in the day, the earliest we can have it freshly baked is now <b>${formatPickupDate(newDate)}</b>.</p>
+    <p><b>Collect at:</b> ${escapeHtml(place.name)}${place.area ? ` · ${escapeHtml(place.area)}` : ""}</p>
+    <p>If that date doesn&apos;t work, just reply or message us on WhatsApp and we&apos;ll sort it out. — No Bites Left</p>
+  `;
+  await send(order.customer.email, `Your No Bites Left pickup date moved to ${formatPickupDate(newDate)}`, html, "customer_notify_pickup_moved", {
+    orderId: order.id,
+    newDate,
     to: order.customer.email,
   });
 }

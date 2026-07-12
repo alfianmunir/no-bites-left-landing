@@ -12,11 +12,17 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { PublicOrder, OrderStatus } from "@/lib/orders";
-import { PICKUP_LOCATION, SUPPORT_WHATSAPP } from "@/lib/fulfillment";
-import { formatPickupDate } from "@/lib/pickupDate";
+import { SUPPORT_WHATSAPP } from "@/lib/fulfillment";
+import { formatPickupDate, type PickupLocationSummary } from "@/lib/pickup";
+
+const PICKUP_FALLBACK: PickupLocationSummary = { name: "No Bites Left · Pickup", area: "" };
 
 function rupiah(n: number): string {
   return "Rp " + n.toLocaleString("id-ID");
+}
+
+function pickupPlace(order: PublicOrder): PickupLocationSummary {
+  return order.pickup_location ?? PICKUP_FALLBACK;
 }
 
 function pickupDateLabel(order: PublicOrder): string | null {
@@ -111,14 +117,14 @@ function OrderTimeline({ status }: { status: OrderStatus }) {
 
 function PickupCard({ order }: { order: PublicOrder }) {
   const label = pickupDateLabel(order);
+  const place = pickupPlace(order);
   return (
     <div style={{ padding: 14, borderRadius: 16, background: "var(--surface)", border: "1.5px solid var(--line)", display: "flex", gap: 12 }}>
       <div style={{ width: 38, height: 38, borderRadius: 12, background: "#fff3e2", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🛍️</div>
       <div>
         <div style={{ fontSize: 11, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.05em" }}>PICK UP AT</div>
-        <div style={{ fontWeight: 800, fontSize: 14.5 }}>{PICKUP_LOCATION.name}</div>
-        <div style={{ fontSize: 13, color: "var(--soft)" }}>{PICKUP_LOCATION.address}</div>
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--choco)", marginTop: 2 }}>{PICKUP_LOCATION.hours}</div>
+        <div style={{ fontWeight: 800, fontSize: 14.5 }}>{place.name}</div>
+        {place.area && <div style={{ fontSize: 13, color: "var(--soft)" }}>{place.area}</div>}
         {label && <div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 4 }}>Collect on {label}</div>}
       </div>
     </div>
@@ -129,7 +135,7 @@ function ItemsSummary({ order }: { order: PublicOrder }) {
   const itemCount = order.items.reduce((s, i) => s + i.qty, 0);
   return (
     <div style={{ fontSize: 13, color: "var(--soft)" }}>
-      {itemCount} items · {rupiah(order.amount)} · pickup at {PICKUP_LOCATION.name}
+      {itemCount} items · {rupiah(order.amount)} · pickup at {pickupPlace(order).name}
     </div>
   );
 }
@@ -231,12 +237,12 @@ export default function OrderStatusView({ order, from }: { order: PublicOrder; f
             {order.status === "READY_FOR_PICKUP" ? (
               <div style={{ padding: 14, borderRadius: 16, background: "var(--tint-success)", border: "1.5px solid rgba(45,147,34,0.3)" }}>
                 <div style={{ fontWeight: 800, fontSize: 14, color: "var(--green)" }}>🛍️ Ready to collect{dateLabel ? ` — on ${dateLabel}` : ""}</div>
-                <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>Baked fresh to order · {PICKUP_LOCATION.name}</div>
+                <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>Baked fresh to order · {pickupPlace(order).name}</div>
               </div>
             ) : (
               <div style={{ padding: 14, borderRadius: 16, background: "var(--tint-amber)", border: "1.5px solid rgba(245,140,33,0.3)" }}>
                 <div style={{ fontWeight: 800, fontSize: 14, color: "var(--choco)" }}>🧑‍🍳 Collect your box{dateLabel ? ` on ${dateLabel}` : ""}</div>
-                <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>Baked fresh to order · {PICKUP_LOCATION.name}</div>
+                <div style={{ fontSize: 12.5, color: "var(--soft)", marginTop: 2 }}>Baked fresh to order · {pickupPlace(order).name}</div>
               </div>
             )}
             <OrderTimeline status={order.status} />

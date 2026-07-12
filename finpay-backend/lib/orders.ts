@@ -1,6 +1,7 @@
 /**
  * Order domain types + helpers shared across API routes, DB, and admin.
  */
+import type { PickupLocationSummary } from "./pickup";
 
 /**
  * Canonical order lifecycle — single-axis state machine (E2E PRD §3).
@@ -133,7 +134,9 @@ export interface Order {
   customer: Customer;
   status: OrderStatus;
   fulfillment: Fulfillment; // v1 = "PICKUP"
-  pickup_date: string | null; // YYYY-MM-DD, >= order day + 3 (v1)
+  pickup_date: string | null; // YYYY-MM-DD, >= lead floor + rule (v1)
+  pickup_location_id: string | null; // chosen pickup location slug (multi-location v1)
+  pickup_location: PickupLocationSummary | null; // denormalized {name, area} for cheap display
   finpay_reference: string | null;
   redirect_url: string | null;
   expiry_link: string | null; // ISO timestamp
@@ -182,6 +185,7 @@ export interface PublicOrder {
   status: OrderStatus;
   fulfillment: Fulfillment;
   pickup_date: string | null;
+  pickup_location: PickupLocationSummary | null;
   amount: number;
   items: OrderItem[];
   redirect_url: string | null;
@@ -199,6 +203,7 @@ export function publicOrderView(o: Order): PublicOrder {
     status: o.status,
     fulfillment: o.fulfillment,
     pickup_date: o.pickup_date,
+    pickup_location: o.pickup_location,
     amount: o.amount,
     items: o.items,
     redirect_url: o.redirect_url,

@@ -72,6 +72,7 @@ const GROUPS: Group[] = [
       { href: "/admin/ops/bake-sheet", label: "Bake", k: "bake" },
       { href: "/admin/ops/landing-menu", label: "Menu", k: "menu" },
       { href: "/admin/ops/menu-map", label: "Menu links", k: "menulinks" },
+      { href: "/admin/ops/pickup-locations", label: "Pickup spots", k: "pickups" },
     ],
   },
   {
