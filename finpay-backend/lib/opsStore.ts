@@ -3280,6 +3280,115 @@ export async function packagingOut(itemId: string, qty: number, note: string | n
   return num(rows[0].cost);
 }
 
+/** Sentinel the outbound flow sends when the operator picks "Other" instead of a
+ *  real expense category. Server maps it to a lazily-created misc opex bucket. */
+export const OUTBOUND_OTHER_CATEGORY = "__other__";
+
+/** Look up (or create) the catch-all opex category used for outbounds booked
+ *  against "Other". Kept as a single misc bucket so P&L/budgets stay coherent. */
+async function ensureOtherCategoryId(client: import("pg").PoolClient): Promise<string> {
+  const found = await client.query(`SELECT id FROM ops.expense_categories WHERE code = 'opex_other'`);
+  if (found.rows[0]) return found.rows[0].id as string;
+  const ins = await client.query(
+    `INSERT INTO ops.expense_categories (code, name, type) VALUES ('opex_other', 'Other / miscellaneous', 'opex') RETURNING id`,
+  );
+  return ins.rows[0].id as string;
+}
+
+export type OutboundKind = "item" | "product" | "other";
+
+/** Outbound / write-off flow (Money → Expense → Outbound). One entry covers
+ *  three sources, all attributed to a chosen expense category so the cost lands
+ *  on that category's P&L line + Budgets-vs-spend:
+ *    - item:    burns a raw ingredient/packaging (FEFO at avg cost, item ledger)
+ *    - product: burns a finished good (at std cost, product stock move)
+ *    - other:   no stock — a manually-entered amount
+ *  Stock sources (item/product) were already paid for on purchase, so the cost
+ *  posts as a NON-CASH expense (no cash entry). "Other" is fresh money, so it
+ *  posts a cash-out from the chosen account. Returns the booked cost + ids. */
+export async function recordOutbound(input: {
+  kind: OutboundKind;
+  categoryId: string; // real category id, or OUTBOUND_OTHER_CATEGORY
+  otherLabel: string | null; // free-text label when categoryId is "Other"
+  itemId: string | null;
+  productId: string | null;
+  qty: number | null; // item/product
+  amount: number | null; // other
+  note: string | null;
+  account: string; // used only when kind === "other"
+  occurredAt: string | null;
+}): Promise<{ expenseId: string; cost: number; stockMoveId: string | null }> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Resolve category (real one, or the misc "Other" bucket).
+    const categoryId =
+      input.categoryId === OUTBOUND_OTHER_CATEGORY ? await ensureOtherCategoryId(client) : input.categoryId;
+    const cat = await client.query(`SELECT code FROM ops.expense_categories WHERE id = $1`, [categoryId]);
+    if (!cat.rows[0]) throw new Error("category not found");
+    const code = cat.rows[0].code as string;
+
+    // Fold the free-text "Other" label into the note so it isn't lost.
+    const note = [input.otherLabel?.trim() || null, input.note?.trim() || null].filter(Boolean).join(" · ") || null;
+
+    // Deduct stock + establish the cost, per source.
+    let cost: number;
+    let stockMoveId: string | null = null;
+    if (input.kind === "item") {
+      if (!input.itemId) throw new Error("select an item");
+      if (!input.qty || input.qty <= 0) throw new Error("enter a quantity greater than 0");
+      const r = await client.query(
+        `SELECT ops.consume_fefo($1, $2, 'production_consume', 'outbound', NULL, $3) AS cost`,
+        [input.itemId, input.qty, note],
+      );
+      cost = num(r.rows[0].cost);
+    } else if (input.kind === "product") {
+      if (!input.productId) throw new Error("select a product");
+      if (!input.qty || input.qty <= 0) throw new Error("enter a quantity greater than 0");
+      const sc = await client.query(`SELECT std_cost FROM ops.products WHERE id = $1`, [input.productId]);
+      if (!sc.rows[0]) throw new Error("product not found");
+      const stdCost = num(sc.rows[0].std_cost);
+      cost = Math.round(stdCost * input.qty * 100) / 100;
+      const mv = await client.query(
+        `INSERT INTO ops.stock_moves (product_id, qty, reason, ref_type, unit_cost, note)
+         VALUES ($1, $2, 'production_consume', 'outbound', $3, $4) RETURNING id`,
+        [input.productId, -input.qty, stdCost, note],
+      );
+      stockMoveId = mv.rows[0].id as string;
+    } else {
+      if (!input.amount || input.amount <= 0) throw new Error("enter an amount greater than 0");
+      cost = Math.round(input.amount * 100) / 100;
+    }
+
+    // Book the expense. Stock sources are non-cash (already paid); "other" pays cash.
+    const nonCash = input.kind !== "other";
+    const ex = await client.query(
+      `INSERT INTO ops.expenses (category_id, amount, vendor, note, occurred_at, recurring, non_cash)
+       VALUES ($1, $2, NULL, $3, COALESCE($4::date, CURRENT_DATE), false, $5) RETURNING id, occurred_at`,
+      [categoryId, cost, note, input.occurredAt || null, nonCash],
+    );
+    const expenseId = ex.rows[0].id as string;
+
+    if (!nonCash) {
+      await client.query(
+        `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+         VALUES ('out', $1, $2, $3, 'expense', $4, $5, $6)`,
+        [cost, input.account, code, expenseId, ex.rows[0].occurred_at, note],
+      );
+    }
+
+    await client.query("COMMIT");
+    return { expenseId, cost, stockMoveId };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // --- Recipe CRUD (adjustable BOM) --------------------------------------------
 
 export interface RecipeLineRow {
