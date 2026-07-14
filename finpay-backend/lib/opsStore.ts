@@ -2369,7 +2369,10 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
   // Waste (spoilage) + shrinkage (net opname loss). Both left inventory without
   // a sale, so they're period costs. cost = −qty × unit_cost (loss/waste qty is
   // negative → positive cost; opname surplus qty is positive → negative =
-  // "found" income). Opname respects the same from-deployment cutoff as its log.
+  // "found" income). Shrinkage covers BOTH item opname (ref_type='opname') and
+  // finished-goods opname (ref_type='product_opname') — same as waste already
+  // spans items and products. batch_cancel reversals reuse the opname_adj reason
+  // but are excluded (ref_type filter). Opname respects the from-deployment cutoff.
   const leakQ = p.query(
     `SELECT
        COALESCE(sum(CASE WHEN reason = 'waste' THEN -qty * unit_cost ELSE 0 END), 0) AS waste,
@@ -2377,7 +2380,7 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
      FROM ops.stock_moves
      WHERE created_at >= $1::date AND created_at < ($2::date + 1)
        AND (reason = 'waste'
-            OR (reason = 'opname_adj' AND ref_type = 'opname'
+            OR (reason = 'opname_adj' AND ref_type IN ('opname', 'product_opname')
                 AND created_at >= COALESCE((SELECT (value #>> '{}')::timestamptz FROM ops.config WHERE key = 'opname_since'), '-infinity'::timestamptz)))`,
     [startISO, endISO],
   );
