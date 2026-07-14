@@ -13,6 +13,7 @@ import type {
   PayablePurchaseRow,
   InvoiceRow,
   ItemDetailRow,
+  ProductRow,
 } from "@/lib/opsStore";
 
 function rupiah(n: number): string {
@@ -290,47 +291,92 @@ function ExpenseEntry({ categories }: { categories: ExpenseCategoryRow[] }) {
   );
 }
 
-// ============================================================ R&D testing out
-/** Outbound raw items burned in R&D testing (trial bakes, recipe development).
- *  Items are picked from the live stock list; the flow deducts stock at avg cost
- *  and books that made-cost onto the P&L R&D line — no cash-out (stock was paid
- *  for on purchase). Sits under the Expense tab as a non-cash "expense" flow. */
-function RndTestingOut({ items }: { items: ItemDetailRow[] }) {
+// ============================================================ Outbound / write-off
+type OutKind = "item" | "product" | "other";
+const OUT_KINDS: Array<{ value: OutKind; label: string }> = [
+  { value: "item", label: "Items" },
+  { value: "product", label: "Finished goods" },
+  { value: "other", label: "Other" },
+];
+const OTHER_CATEGORY = "__other__";
+
+/** Outbound / write-off flow. Burns a raw item, a finished good, or a manual
+ *  "other" amount, attributed to a chosen expense category (grouped by budget
+ *  type, or "Other"). Items & finished goods were already paid for on purchase,
+ *  so they post as a NON-CASH cost (stock ledger move + expense, no cash entry);
+ *  "Other" is fresh money and posts a cash-out from the chosen account. */
+function OutboundEntry({ items, products, categories }: { items: ItemDetailRow[]; products: ProductRow[]; categories: ExpenseCategoryRow[] }) {
   const router = useRouter();
+  const [kind, setKind] = useState<OutKind>("item");
   const [itemId, setItemId] = useState("");
+  const [productId, setProductId] = useState("");
   const [qty, setQty] = useState("");
+  const [amount, setAmount] = useState("");
+  const [categoryId, setCategoryId] = useState((categories.find((c) => c.code === "mkt_rnd_tester") ?? categories.find((c) => c.type === "opex") ?? categories[0])?.id ?? "");
+  const [otherLabel, setOtherLabel] = useState("");
+  const [account, setAccount] = useState("bank");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
   const item = items.find((i) => i.id === itemId);
+  const product = products.find((p) => p.id === productId);
   const qtyNum = Number(qty) || 0;
-  const estCost = item ? item.avgCost * qtyNum : null;
-  const overStock = item != null && qtyNum > item.onHand;
+  const amountNum = Number(amount) || 0;
+  const estCost =
+    kind === "item" ? (item ? item.avgCost * qtyNum : null)
+    : kind === "product" ? (product ? product.stdCost * qtyNum : null)
+    : amountNum;
+  const overStock = kind === "item" && item != null && qtyNum > item.onHand;
+  const isOther = kind === "other";
 
-  const grouped: Array<{ type: string; label: string; items: ItemDetailRow[] }> = [
+  const catGroups: Array<{ type: string; label: string; items: ExpenseCategoryRow[] }> = [
+    { type: "opex", label: "Opex", items: categories.filter((c) => c.type === "opex") },
+    { type: "marketing", label: "Marketing", items: categories.filter((c) => c.type === "marketing") },
+    { type: "capex", label: "Capex", items: categories.filter((c) => c.type === "capex") },
+  ].filter((g) => g.items.length > 0);
+
+  const itemGroups: Array<{ type: string; label: string; items: ItemDetailRow[] }> = [
     { type: "ingredient", label: "Ingredients", items: items.filter((i) => i.type === "ingredient") },
     { type: "packaging", label: "Packaging", items: items.filter((i) => i.type === "packaging") },
   ].filter((g) => g.items.length > 0);
 
+  const switchKind = (k: OutKind) => { setKind(k); setDone(null); setError(null); };
+
   const submit = async () => {
     setError(null); setDone(null);
-    if (!itemId) return setError("Select an item to outbound.");
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0) return setError("Enter a quantity greater than 0.");
+    if (!categoryId) return setError("Select a category.");
+    if (categoryId === OTHER_CATEGORY && !otherLabel.trim()) return setError("Name the 'Other' category.");
+    if (kind === "item" && !itemId) return setError("Select an item.");
+    if (kind === "product" && !productId) return setError("Select a finished good.");
+    if ((kind === "item" || kind === "product") && (!Number.isFinite(qtyNum) || qtyNum <= 0)) return setError("Enter a quantity greater than 0.");
+    if (kind === "other" && (!Number.isFinite(amountNum) || amountNum <= 0)) return setError("Enter an amount greater than 0.");
     setBusy(true);
     try {
-      const res = await fetch("/api/admin/ops/rnd-out", {
+      const res = await fetch("/api/admin/ops/outbound", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ itemId, qty: qtyNum, note: note || null }),
+        body: JSON.stringify({
+          kind, categoryId,
+          otherLabel: categoryId === OTHER_CATEGORY ? otherLabel : null,
+          itemId: kind === "item" ? itemId : null,
+          productId: kind === "product" ? productId : null,
+          qty: kind === "other" ? null : qtyNum,
+          amount: kind === "other" ? amountNum : null,
+          note: note || null,
+          account,
+        }),
       });
       const data = await res.json();
-      if (!res.ok) setError(data.error ?? "Could not record the R&D outbound.");
+      if (!res.ok) setError(data.error ?? "Could not record the outbound.");
       else {
         const cost = typeof data.cost === "number" ? data.cost : estCost ?? 0;
-        setDone(`Outbounded ${qtyNum} ${item?.unit ?? ""} of ${item?.name ?? "item"} — ${rupiah(cost)} booked to R&D.`);
-        setItemId(""); setQty(""); setNote("");
+        const what = kind === "item" ? `${qtyNum} ${item?.unit ?? ""} of ${item?.name ?? "item"}`
+          : kind === "product" ? `${qtyNum} × ${product?.name ?? "product"}`
+          : "amount";
+        setDone(`Outbounded ${what} — ${rupiah(cost)} booked${isOther ? ` as cash out from ${accountLabel(account)}` : " (non-cash)"}.`);
+        setItemId(""); setProductId(""); setQty(""); setAmount(""); setNote("");
         router.refresh();
       }
     } catch {
@@ -343,44 +389,99 @@ function RndTestingOut({ items }: { items: ItemDetailRow[] }) {
   return (
     <div style={{ ...card, display: "flex", flexDirection: "column", gap: 14 }}>
       <div>
-        <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>R&amp;D testing — outbound items</div>
-        <div style={{ fontSize: 12, color: "var(--soft)", marginTop: 2 }}>Burn ingredients or packaging for trial bakes / recipe development. Deducts stock and books the cost to R&amp;D (no cash-out).</div>
+        <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>Outbound / write-off</div>
+        <div style={{ fontSize: 12, color: "var(--soft)", marginTop: 2 }}>Send stock or spend out to a budget category — e.g. R&amp;D testing, samples, giveaways. Items &amp; finished goods deduct stock at cost (non-cash, already paid); &ldquo;Other&rdquo; posts a cash-out.</div>
       </div>
       {done && <div style={{ padding: "10px 14px", background: "var(--tint-success)", border: "1.5px solid var(--green)", borderRadius: 12, fontSize: 13.5, color: "var(--ink)", fontWeight: 700 }}>✓ {done}</div>}
 
+      <div style={{ display: "flex", gap: 8 }}>
+        {OUT_KINDS.map((k) => (
+          <button key={k.value} onClick={() => switchKind(k.value)} style={{
+            flex: 1, padding: "9px 12px", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: "pointer",
+            border: `1.5px solid ${kind === k.value ? "var(--choco)" : "var(--line)"}`,
+            background: kind === k.value ? "var(--choco)" : "#fff",
+            color: kind === k.value ? "#fff" : "var(--soft)",
+          }}>{k.label}</button>
+        ))}
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        {kind === "item" && (
+          <div>
+            <label style={labelStyle}>Item</label>
+            <select style={inputStyle} value={itemId} onChange={(e) => { setItemId(e.target.value); setDone(null); }}>
+              <option value="">— select from stock —</option>
+              {itemGroups.map((g) => (
+                <optgroup key={g.type} label={g.label}>
+                  {g.items.map((i) => <option key={i.id} value={i.id}>{i.name} · {i.onHand} {i.unit} on hand</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+        )}
+        {kind === "product" && (
+          <div>
+            <label style={labelStyle}>Finished good</label>
+            <select style={inputStyle} value={productId} onChange={(e) => { setProductId(e.target.value); setDone(null); }}>
+              <option value="">— select product —</option>
+              {products.map((pr) => <option key={pr.id} value={pr.id}>{pr.name} ({pr.sku})</option>)}
+            </select>
+          </div>
+        )}
+        {(kind === "item" || kind === "product") && (
+          <div>
+            <label style={labelStyle}>Quantity{kind === "item" && item ? ` (${item.unit})` : ""}</label>
+            <input type="number" inputMode="decimal" min="0" style={inputStyle} value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" />
+          </div>
+        )}
+        {kind === "other" && (
+          <>
+            <div>
+              <label style={labelStyle}>Amount (Rp)</label>
+              <input type="number" inputMode="numeric" min="0" style={inputStyle} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
+            </div>
+            <div>
+              <label style={labelStyle}>Pay from</label>
+              <select style={inputStyle} value={account} onChange={(e) => setAccount(e.target.value)}>
+                {ACCOUNT_OPTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+              </select>
+            </div>
+          </>
+        )}
         <div>
-          <label style={labelStyle}>Item</label>
-          <select style={inputStyle} value={itemId} onChange={(e) => { setItemId(e.target.value); setDone(null); }}>
-            <option value="">— select from stock —</option>
-            {grouped.map((g) => (
+          <label style={labelStyle}>Category</label>
+          <select style={inputStyle} value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+            {catGroups.map((g) => (
               <optgroup key={g.type} label={g.label}>
-                {g.items.map((i) => <option key={i.id} value={i.id}>{i.name} · {i.onHand} {i.unit} on hand</option>)}
+                {g.items.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </optgroup>
             ))}
+            <option value={OTHER_CATEGORY}>Other…</option>
           </select>
         </div>
-        <div>
-          <label style={labelStyle}>Quantity{item ? ` (${item.unit})` : ""}</label>
-          <input type="number" inputMode="decimal" min="0" style={inputStyle} value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" />
-        </div>
+        {categoryId === OTHER_CATEGORY && (
+          <div>
+            <label style={labelStyle}>Other category name</label>
+            <input style={inputStyle} value={otherLabel} onChange={(e) => setOtherLabel(e.target.value)} placeholder="what is this for?" />
+          </div>
+        )}
       </div>
 
       <div>
         <label style={labelStyle}>Note</label>
-        <input style={inputStyle} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. matcha ratio trial, new box sample" />
+        <input style={inputStyle} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. matcha ratio trial, tester box, event sampling" />
       </div>
 
-      {estCost != null && qtyNum > 0 && (
+      {estCost != null && (isOther ? amountNum > 0 : qtyNum > 0) && (
         <div style={{ fontSize: 12.5, color: "var(--soft)" }}>
-          Est. cost to R&amp;D {rupiah(estCost)} <span style={{ opacity: 0.7 }}>(avg cost × qty)</span>
+          {isOther ? <>Books {rupiah(estCost)} as a cash-out.</> : <>Est. cost {rupiah(estCost)} <span style={{ opacity: 0.7 }}>({kind === "item" ? "avg" : "std"} cost × qty · non-cash)</span></>}
         </div>
       )}
       {overStock && <div style={{ fontSize: 12.5, color: "var(--orange)", fontWeight: 700 }}>Heads up — that&apos;s more than the {item?.onHand} {item?.unit} on hand; it will post as no-lot stock at avg cost.</div>}
       {error && <div style={{ color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
 
       <button onClick={submit} disabled={busy} style={{ alignSelf: "flex-start", padding: "12px 22px", borderRadius: 12, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 14.5, cursor: busy ? "default" : "pointer" }}>
-        {busy ? "Saving…" : "Record R&D outbound"}
+        {busy ? "Saving…" : "Record outbound"}
       </button>
     </div>
   );
@@ -888,6 +989,7 @@ export default function MoneyPanel({
   payables,
   invoices,
   items,
+  products,
   pnl,
   monthLabel,
   today,
@@ -900,6 +1002,7 @@ export default function MoneyPanel({
   payables: PayablePurchaseRow[];
   invoices: InvoiceRow[];
   items: ItemDetailRow[];
+  products: ProductRow[];
   pnl: PnL;
   monthLabel: string;
   today: string;
@@ -932,7 +1035,7 @@ export default function MoneyPanel({
       {tab === "expense" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <ExpenseEntry categories={categories} />
-          <RndTestingOut items={items} />
+          <OutboundEntry items={items} products={products} categories={categories} />
         </div>
       )}
       {tab === "budgets" && <Budgets budgets={budgets} categories={categories} monthLabel={monthLabel} />}

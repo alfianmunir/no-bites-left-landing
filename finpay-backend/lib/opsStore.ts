@@ -2392,17 +2392,6 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
         AND pb.baked_at BETWEEN $1::date AND $2::date`,
     [startISO, endISO],
   );
-  // Raw items outbounded straight to R&D testing (Money → Expense → R&D testing
-  // out). Tagged ref_type 'rnd_out'; the burned made-cost joins the R&D line
-  // alongside the batch-level qty_rnd carve-out above. qty is negative on a
-  // consume move, so −qty × unit_cost is the positive cost written off.
-  const rndOutQ = p.query(
-    `SELECT COALESCE(sum(-qty * unit_cost), 0) AS rnd_out
-       FROM ops.stock_moves
-      WHERE ref_type = 'rnd_out'
-        AND created_at >= $1::date AND created_at < ($2::date + 1)`,
-    [startISO, endISO],
-  );
   // Labor = NON-production payroll only (decision B: baker/packer labor is
   // absorbed into COGS via batch labor; officers/admin are a period expense).
   const laborQ = p.query(
@@ -2414,7 +2403,7 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
         AND s.role NOT IN ('baker', 'packer')`,
     [startISO],
   );
-  const [sales, exp, dep, leak, carve, rndOut, lab] = await Promise.all([salesQ, expQ, depQ, leakQ, carveQ, rndOutQ, laborQ]);
+  const [sales, exp, dep, leak, carve, lab] = await Promise.all([salesQ, expQ, depQ, leakQ, carveQ, laborQ]);
   const s = sales.rows[0];
   const revenue = num(s.gross); // GROSS — fees are their own line now (H7)
   const fees = num(s.fee);
@@ -2428,7 +2417,7 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
   const waste = num(leak.rows[0].waste);
   const shrinkage = num(leak.rows[0].shrinkage);
   const samples = num(carve.rows[0].samples);
-  const rnd = num(carve.rows[0].rnd) + num(rndOut.rows[0].rnd_out);
+  const rnd = num(carve.rows[0].rnd);
   const labor = num(lab.rows[0].labor);
   // Depreciation is now the posted non-cash opex row for the period (H3); if the
   // month hasn't been closed yet it reads 0 rather than a live estimate.
@@ -3291,19 +3280,113 @@ export async function packagingOut(itemId: string, qty: number, note: string | n
   return num(rows[0].cost);
 }
 
-/** Outbound raw items consumed in R&D testing (recipe development, trial bakes) —
- *  deducts stock FEFO at avg cost, tagged ref_type 'rnd_out' so the made-cost
- *  lands on the P&L R&D line (getPnL). This is NOT a cash-out: the stock was
- *  already paid for when it was purchased; this just reclasses the inventory it
- *  burns into an R&D period cost, exactly like waste reclasses spoilage.
- *  Returns the cost written out. */
-export async function rndTestingOut(itemId: string, qty: number, note: string | null): Promise<number> {
-  const p = await pool();
-  const { rows } = await p.query(
-    `SELECT ops.consume_fefo($1, $2, 'production_consume', 'rnd_out', NULL, $3) AS cost`,
-    [itemId, qty, note || null],
+/** Sentinel the outbound flow sends when the operator picks "Other" instead of a
+ *  real expense category. Server maps it to a lazily-created misc opex bucket. */
+export const OUTBOUND_OTHER_CATEGORY = "__other__";
+
+/** Look up (or create) the catch-all opex category used for outbounds booked
+ *  against "Other". Kept as a single misc bucket so P&L/budgets stay coherent. */
+async function ensureOtherCategoryId(client: import("pg").PoolClient): Promise<string> {
+  const found = await client.query(`SELECT id FROM ops.expense_categories WHERE code = 'opex_other'`);
+  if (found.rows[0]) return found.rows[0].id as string;
+  const ins = await client.query(
+    `INSERT INTO ops.expense_categories (code, name, type) VALUES ('opex_other', 'Other / miscellaneous', 'opex') RETURNING id`,
   );
-  return num(rows[0].cost);
+  return ins.rows[0].id as string;
+}
+
+export type OutboundKind = "item" | "product" | "other";
+
+/** Outbound / write-off flow (Money → Expense → Outbound). One entry covers
+ *  three sources, all attributed to a chosen expense category so the cost lands
+ *  on that category's P&L line + Budgets-vs-spend:
+ *    - item:    burns a raw ingredient/packaging (FEFO at avg cost, item ledger)
+ *    - product: burns a finished good (at std cost, product stock move)
+ *    - other:   no stock — a manually-entered amount
+ *  Stock sources (item/product) were already paid for on purchase, so the cost
+ *  posts as a NON-CASH expense (no cash entry). "Other" is fresh money, so it
+ *  posts a cash-out from the chosen account. Returns the booked cost + ids. */
+export async function recordOutbound(input: {
+  kind: OutboundKind;
+  categoryId: string; // real category id, or OUTBOUND_OTHER_CATEGORY
+  otherLabel: string | null; // free-text label when categoryId is "Other"
+  itemId: string | null;
+  productId: string | null;
+  qty: number | null; // item/product
+  amount: number | null; // other
+  note: string | null;
+  account: string; // used only when kind === "other"
+  occurredAt: string | null;
+}): Promise<{ expenseId: string; cost: number; stockMoveId: string | null }> {
+  const p = await pool();
+  const client = await p.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Resolve category (real one, or the misc "Other" bucket).
+    const categoryId =
+      input.categoryId === OUTBOUND_OTHER_CATEGORY ? await ensureOtherCategoryId(client) : input.categoryId;
+    const cat = await client.query(`SELECT code FROM ops.expense_categories WHERE id = $1`, [categoryId]);
+    if (!cat.rows[0]) throw new Error("category not found");
+    const code = cat.rows[0].code as string;
+
+    // Fold the free-text "Other" label into the note so it isn't lost.
+    const note = [input.otherLabel?.trim() || null, input.note?.trim() || null].filter(Boolean).join(" · ") || null;
+
+    // Deduct stock + establish the cost, per source.
+    let cost: number;
+    let stockMoveId: string | null = null;
+    if (input.kind === "item") {
+      if (!input.itemId) throw new Error("select an item");
+      if (!input.qty || input.qty <= 0) throw new Error("enter a quantity greater than 0");
+      const r = await client.query(
+        `SELECT ops.consume_fefo($1, $2, 'production_consume', 'outbound', NULL, $3) AS cost`,
+        [input.itemId, input.qty, note],
+      );
+      cost = num(r.rows[0].cost);
+    } else if (input.kind === "product") {
+      if (!input.productId) throw new Error("select a product");
+      if (!input.qty || input.qty <= 0) throw new Error("enter a quantity greater than 0");
+      const sc = await client.query(`SELECT std_cost FROM ops.products WHERE id = $1`, [input.productId]);
+      if (!sc.rows[0]) throw new Error("product not found");
+      const stdCost = num(sc.rows[0].std_cost);
+      cost = Math.round(stdCost * input.qty * 100) / 100;
+      const mv = await client.query(
+        `INSERT INTO ops.stock_moves (product_id, qty, reason, ref_type, unit_cost, note)
+         VALUES ($1, $2, 'production_consume', 'outbound', $3, $4) RETURNING id`,
+        [input.productId, -input.qty, stdCost, note],
+      );
+      stockMoveId = mv.rows[0].id as string;
+    } else {
+      if (!input.amount || input.amount <= 0) throw new Error("enter an amount greater than 0");
+      cost = Math.round(input.amount * 100) / 100;
+    }
+
+    // Book the expense. Stock sources are non-cash (already paid); "other" pays cash.
+    const nonCash = input.kind !== "other";
+    const ex = await client.query(
+      `INSERT INTO ops.expenses (category_id, amount, vendor, note, occurred_at, recurring, non_cash)
+       VALUES ($1, $2, NULL, $3, COALESCE($4::date, CURRENT_DATE), false, $5) RETURNING id, occurred_at`,
+      [categoryId, cost, note, input.occurredAt || null, nonCash],
+    );
+    const expenseId = ex.rows[0].id as string;
+
+    if (!nonCash) {
+      await client.query(
+        `INSERT INTO ops.cash_entries (direction, amount, account, category, ref_type, ref_id, occurred_at, note)
+         VALUES ('out', $1, $2, $3, 'expense', $4, $5, $6)`,
+        [cost, input.account, code, expenseId, ex.rows[0].occurred_at, note],
+      );
+    }
+
+    await client.query("COMMIT");
+    return { expenseId, cost, stockMoveId };
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 // --- Recipe CRUD (adjustable BOM) --------------------------------------------

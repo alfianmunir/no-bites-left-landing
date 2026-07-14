@@ -31,7 +31,7 @@ function meta(row: StockLedgerRow): { label: string; tone: "in" | "out" | "neutr
     case "sale": return { label: "Sold", tone: "out" };
     case "waste": return { label: "Waste", tone: "out" };
     case "production_consume":
-      return { label: refType === "packaging_out" ? "Packaging out" : refType === "rnd_out" ? "R&D testing" : "Consumed", tone: "out" };
+      return { label: refType === "packaging_out" ? "Packaging out" : refType === "outbound" ? "Outbound" : "Consumed", tone: "out" };
     case "opname_adj":
       if (refType === "batch_cancel") return { label: "Batch reversed", tone: qty >= 0 ? "in" : "out" };
       return { label: qty > 0 ? "Opname +" : qty < 0 ? "Opname −" : "Opname =", tone: qty > 0 ? "in" : qty < 0 ? "out" : "neutral" };
