@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { isOpsUser } from "@/lib/adminAuth";
-import { opsEnabled, listStockBalance, listProductOpnameChoices, listOpnameAdjustments, getOpnameSince, type OpnameCategory } from "@/lib/opsStore";
+import { opsEnabled, listStockBalance, listProductOpnameChoices, listOpnameAdjustments, type OpnameCategory } from "@/lib/opsStore";
 import { OpsShell, DbNotice, rupiah, qty } from "../OpsChrome";
 import OpnameForm from "./OpnameForm";
 import ProductOpnameForm from "./ProductOpnameForm";
@@ -30,7 +30,7 @@ export default async function OpsOpnamePage() {
     );
   }
 
-  const [balance, products, adjustments, since] = await Promise.all([listStockBalance(), listProductOpnameChoices(), listOpnameAdjustments(), getOpnameSince()]);
+  const [balance, products, adjustments] = await Promise.all([listStockBalance(), listProductOpnameChoices(), listOpnameAdjustments()]);
 
   // Surplus / loss / equal breakdown: count of adjustments + summed value per bucket.
   const summary = { surplus: { n: 0, value: 0 }, loss: { n: 0, value: 0 }, equal: { n: 0, value: 0 } };
@@ -64,7 +64,7 @@ export default async function OpsOpnamePage() {
 
       {/* All adjustments */}
       <div style={{ marginTop: 18 }}>
-        <div style={{ fontSize: 11.5, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.05em", marginBottom: 8 }}>ALL ADJUSTMENTS · {adjustments.length}{since ? ` · since ${since}` : ""}</div>
+        <div style={{ fontSize: 11.5, fontWeight: 800, color: "var(--soft)", letterSpacing: "0.05em", marginBottom: 8 }}>ALL ADJUSTMENTS · {adjustments.length}</div>
         {adjustments.length === 0 ? (
           <div style={{ background: "#fff", border: "1.5px solid var(--line)", borderRadius: 14, padding: 18, textAlign: "center", color: "var(--soft)", fontSize: 13.5 }}>No opname counts recorded yet.</div>
         ) : (

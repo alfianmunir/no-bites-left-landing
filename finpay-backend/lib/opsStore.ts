@@ -720,7 +720,8 @@ export interface OpnameAdjRow {
 /** All opname adjustments (surplus / loss / equal), newest first — both item
  *  counts (ref_type='opname') AND finished-goods counts (ref_type='product_opname'),
  *  tagged with `kind`. Excludes batch-cancel reversals, which reuse the opname_adj
- *  reason. qty>0 surplus, <0 loss, 0 equal (matched). Honours the opname_since cutoff. */
+ *  reason. qty>0 surplus, <0 loss, 0 equal (matched). All-time — the historical
+ *  opname_since cutoff was dropped so the pre-launch initial counts also show. */
 export async function listOpnameAdjustments(limit = 100): Promise<OpnameAdjRow[]> {
   const p = await pool();
   const { rows } = await p.query(
@@ -736,9 +737,6 @@ export async function listOpnameAdjustments(limit = 100): Promise<OpnameAdjRow[]
            FROM ops.stock_moves sm JOIN ops.products pr ON pr.id = sm.product_id
           WHERE sm.reason = 'opname_adj' AND sm.ref_type = 'product_opname'
        ) u
-      WHERE u.created_at >= COALESCE(
-              (SELECT (value #>> '{}')::timestamptz FROM ops.config WHERE key = 'opname_since'),
-              '-infinity'::timestamptz)
       ORDER BY u.created_at DESC
       LIMIT $1`,
     [limit],
@@ -760,14 +758,6 @@ export async function listOpnameAdjustments(limit = 100): Promise<OpnameAdjRow[]
       at: new Date(r.created_at as string).toISOString(),
     };
   });
-}
-
-/** The opname-counting cutoff (ISO date) — adjustments before this are ignored.
- *  null if unset (then everything counts). */
-export async function getOpnameSince(): Promise<string | null> {
-  const p = await pool();
-  const { rows } = await p.query(`SELECT (value #>> '{}') AS since FROM ops.config WHERE key = 'opname_since'`);
-  return rows[0]?.since ? new Date(rows[0].since as string).toISOString().slice(0, 10) : null;
 }
 
 // --- Stock movement ledger ---------------------------------------------------
@@ -2372,7 +2362,9 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
   // "found" income). Shrinkage covers BOTH item opname (ref_type='opname') and
   // finished-goods opname (ref_type='product_opname') — same as waste already
   // spans items and products. batch_cancel reversals reuse the opname_adj reason
-  // but are excluded (ref_type filter). Opname respects the from-deployment cutoff.
+  // but are excluded (ref_type filter). All opname counts are included (the
+  // historical opname_since cutoff was dropped) and land in the period they
+  // occurred, so a pre-launch initial count shows as a one-off surplus/loss then.
   const leakQ = p.query(
     `SELECT
        COALESCE(sum(CASE WHEN reason = 'waste' THEN -qty * unit_cost ELSE 0 END), 0) AS waste,
@@ -2380,8 +2372,7 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
      FROM ops.stock_moves
      WHERE created_at >= $1::date AND created_at < ($2::date + 1)
        AND (reason = 'waste'
-            OR (reason = 'opname_adj' AND ref_type IN ('opname', 'product_opname')
-                AND created_at >= COALESCE((SELECT (value #>> '{}')::timestamptz FROM ops.config WHERE key = 'opname_since'), '-infinity'::timestamptz)))`,
+            OR (reason = 'opname_adj' AND ref_type IN ('opname', 'product_opname')))`,
     [startISO, endISO],
   );
   // Sample/KOL + R&D units given away, valued at their made-cost — the cost that
