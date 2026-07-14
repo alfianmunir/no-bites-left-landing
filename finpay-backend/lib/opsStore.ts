@@ -2392,6 +2392,17 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
         AND pb.baked_at BETWEEN $1::date AND $2::date`,
     [startISO, endISO],
   );
+  // Raw items outbounded straight to R&D testing (Money → Expense → R&D testing
+  // out). Tagged ref_type 'rnd_out'; the burned made-cost joins the R&D line
+  // alongside the batch-level qty_rnd carve-out above. qty is negative on a
+  // consume move, so −qty × unit_cost is the positive cost written off.
+  const rndOutQ = p.query(
+    `SELECT COALESCE(sum(-qty * unit_cost), 0) AS rnd_out
+       FROM ops.stock_moves
+      WHERE ref_type = 'rnd_out'
+        AND created_at >= $1::date AND created_at < ($2::date + 1)`,
+    [startISO, endISO],
+  );
   // Labor = NON-production payroll only (decision B: baker/packer labor is
   // absorbed into COGS via batch labor; officers/admin are a period expense).
   const laborQ = p.query(
@@ -2403,7 +2414,7 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
         AND s.role NOT IN ('baker', 'packer')`,
     [startISO],
   );
-  const [sales, exp, dep, leak, carve, lab] = await Promise.all([salesQ, expQ, depQ, leakQ, carveQ, laborQ]);
+  const [sales, exp, dep, leak, carve, rndOut, lab] = await Promise.all([salesQ, expQ, depQ, leakQ, carveQ, rndOutQ, laborQ]);
   const s = sales.rows[0];
   const revenue = num(s.gross); // GROSS — fees are their own line now (H7)
   const fees = num(s.fee);
@@ -2417,7 +2428,7 @@ export async function getPnL(startISO: string, endISO: string): Promise<PnL> {
   const waste = num(leak.rows[0].waste);
   const shrinkage = num(leak.rows[0].shrinkage);
   const samples = num(carve.rows[0].samples);
-  const rnd = num(carve.rows[0].rnd);
+  const rnd = num(carve.rows[0].rnd) + num(rndOut.rows[0].rnd_out);
   const labor = num(lab.rows[0].labor);
   // Depreciation is now the posted non-cash opex row for the period (H3); if the
   // month hasn't been closed yet it reads 0 rather than a live estimate.
@@ -3275,6 +3286,21 @@ export async function packagingOut(itemId: string, qty: number, note: string | n
   const p = await pool();
   const { rows } = await p.query(
     `SELECT ops.consume_fefo($1, $2, 'production_consume', 'packaging_out', NULL, $3) AS cost`,
+    [itemId, qty, note || null],
+  );
+  return num(rows[0].cost);
+}
+
+/** Outbound raw items consumed in R&D testing (recipe development, trial bakes) —
+ *  deducts stock FEFO at avg cost, tagged ref_type 'rnd_out' so the made-cost
+ *  lands on the P&L R&D line (getPnL). This is NOT a cash-out: the stock was
+ *  already paid for when it was purchased; this just reclasses the inventory it
+ *  burns into an R&D period cost, exactly like waste reclasses spoilage.
+ *  Returns the cost written out. */
+export async function rndTestingOut(itemId: string, qty: number, note: string | null): Promise<number> {
+  const p = await pool();
+  const { rows } = await p.query(
+    `SELECT ops.consume_fefo($1, $2, 'production_consume', 'rnd_out', NULL, $3) AS cost`,
     [itemId, qty, note || null],
   );
   return num(rows[0].cost);

@@ -9,6 +9,7 @@ import {
   listAssets,
   listPayablePurchases,
   listInvoices,
+  listItemsWithStock,
   getPnL,
 } from "@/lib/opsStore";
 import { monthRange } from "@/lib/opsFinance";
@@ -32,7 +33,7 @@ export default async function OpsMoneyPage() {
   const { start, end, label } = monthRange();
   const month = start.slice(0, 7); // "YYYY-MM"
 
-  const [position, entries, categories, budgets, assets, payables, invoices, pnl] = await Promise.all([
+  const [position, entries, categories, budgets, assets, payables, invoices, items, pnl] = await Promise.all([
     getCashPosition(),
     listCashEntries({ month }),
     listExpenseCategories(),
@@ -40,6 +41,7 @@ export default async function OpsMoneyPage() {
     listAssets(),
     listPayablePurchases(),
     listInvoices(),
+    listItemsWithStock(),
     getPnL(start, end),
   ]);
 
@@ -55,6 +57,7 @@ export default async function OpsMoneyPage() {
         assets={assets}
         payables={payables}
         invoices={invoices}
+        items={items}
         pnl={pnl}
         monthLabel={label}
         today={today}

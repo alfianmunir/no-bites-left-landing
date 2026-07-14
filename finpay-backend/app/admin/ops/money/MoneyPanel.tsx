@@ -12,6 +12,7 @@ import type {
   AssetRow,
   PayablePurchaseRow,
   InvoiceRow,
+  ItemDetailRow,
 } from "@/lib/opsStore";
 
 function rupiah(n: number): string {
@@ -284,6 +285,102 @@ function ExpenseEntry({ categories }: { categories: ExpenseCategoryRow[] }) {
 
       <button onClick={submit} disabled={busy} style={{ alignSelf: "flex-start", padding: "12px 22px", borderRadius: 12, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 14.5, cursor: busy ? "default" : "pointer" }}>
         {busy ? "Saving…" : "Record expense"}
+      </button>
+    </div>
+  );
+}
+
+// ============================================================ R&D testing out
+/** Outbound raw items burned in R&D testing (trial bakes, recipe development).
+ *  Items are picked from the live stock list; the flow deducts stock at avg cost
+ *  and books that made-cost onto the P&L R&D line — no cash-out (stock was paid
+ *  for on purchase). Sits under the Expense tab as a non-cash "expense" flow. */
+function RndTestingOut({ items }: { items: ItemDetailRow[] }) {
+  const router = useRouter();
+  const [itemId, setItemId] = useState("");
+  const [qty, setQty] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const item = items.find((i) => i.id === itemId);
+  const qtyNum = Number(qty) || 0;
+  const estCost = item ? item.avgCost * qtyNum : null;
+  const overStock = item != null && qtyNum > item.onHand;
+
+  const grouped: Array<{ type: string; label: string; items: ItemDetailRow[] }> = [
+    { type: "ingredient", label: "Ingredients", items: items.filter((i) => i.type === "ingredient") },
+    { type: "packaging", label: "Packaging", items: items.filter((i) => i.type === "packaging") },
+  ].filter((g) => g.items.length > 0);
+
+  const submit = async () => {
+    setError(null); setDone(null);
+    if (!itemId) return setError("Select an item to outbound.");
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) return setError("Enter a quantity greater than 0.");
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/ops/rnd-out", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId, qty: qtyNum, note: note || null }),
+      });
+      const data = await res.json();
+      if (!res.ok) setError(data.error ?? "Could not record the R&D outbound.");
+      else {
+        const cost = typeof data.cost === "number" ? data.cost : estCost ?? 0;
+        setDone(`Outbounded ${qtyNum} ${item?.unit ?? ""} of ${item?.name ?? "item"} — ${rupiah(cost)} booked to R&D.`);
+        setItemId(""); setQty(""); setNote("");
+        router.refresh();
+      }
+    } catch {
+      setError("Request failed — check your connection.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ ...card, display: "flex", flexDirection: "column", gap: 14 }}>
+      <div>
+        <div style={{ fontWeight: 900, fontSize: 15, color: "var(--choco)" }}>R&amp;D testing — outbound items</div>
+        <div style={{ fontSize: 12, color: "var(--soft)", marginTop: 2 }}>Burn ingredients or packaging for trial bakes / recipe development. Deducts stock and books the cost to R&amp;D (no cash-out).</div>
+      </div>
+      {done && <div style={{ padding: "10px 14px", background: "var(--tint-success)", border: "1.5px solid var(--green)", borderRadius: 12, fontSize: 13.5, color: "var(--ink)", fontWeight: 700 }}>✓ {done}</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div>
+          <label style={labelStyle}>Item</label>
+          <select style={inputStyle} value={itemId} onChange={(e) => { setItemId(e.target.value); setDone(null); }}>
+            <option value="">— select from stock —</option>
+            {grouped.map((g) => (
+              <optgroup key={g.type} label={g.label}>
+                {g.items.map((i) => <option key={i.id} value={i.id}>{i.name} · {i.onHand} {i.unit} on hand</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>Quantity{item ? ` (${item.unit})` : ""}</label>
+          <input type="number" inputMode="decimal" min="0" style={inputStyle} value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" />
+        </div>
+      </div>
+
+      <div>
+        <label style={labelStyle}>Note</label>
+        <input style={inputStyle} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. matcha ratio trial, new box sample" />
+      </div>
+
+      {estCost != null && qtyNum > 0 && (
+        <div style={{ fontSize: 12.5, color: "var(--soft)" }}>
+          Est. cost to R&amp;D {rupiah(estCost)} <span style={{ opacity: 0.7 }}>(avg cost × qty)</span>
+        </div>
+      )}
+      {overStock && <div style={{ fontSize: 12.5, color: "var(--orange)", fontWeight: 700 }}>Heads up — that&apos;s more than the {item?.onHand} {item?.unit} on hand; it will post as no-lot stock at avg cost.</div>}
+      {error && <div style={{ color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{error}</div>}
+
+      <button onClick={submit} disabled={busy} style={{ alignSelf: "flex-start", padding: "12px 22px", borderRadius: 12, border: "none", background: busy ? "var(--soft)" : "var(--choco)", color: "#fff", fontWeight: 900, fontSize: 14.5, cursor: busy ? "default" : "pointer" }}>
+        {busy ? "Saving…" : "Record R&D outbound"}
       </button>
     </div>
   );
@@ -790,6 +887,7 @@ export default function MoneyPanel({
   assets,
   payables,
   invoices,
+  items,
   pnl,
   monthLabel,
   today,
@@ -801,6 +899,7 @@ export default function MoneyPanel({
   assets: AssetRow[];
   payables: PayablePurchaseRow[];
   invoices: InvoiceRow[];
+  items: ItemDetailRow[];
   pnl: PnL;
   monthLabel: string;
   today: string;
@@ -830,7 +929,12 @@ export default function MoneyPanel({
 
       {tab === "overview" && <Overview position={position} pnl={pnl} monthLabel={monthLabel} />}
       {tab === "ledger" && <Ledger entries={entries} monthLabel={monthLabel} />}
-      {tab === "expense" && <ExpenseEntry categories={categories} />}
+      {tab === "expense" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <ExpenseEntry categories={categories} />
+          <RndTestingOut items={items} />
+        </div>
+      )}
       {tab === "budgets" && <Budgets budgets={budgets} categories={categories} monthLabel={monthLabel} />}
       {tab === "assets" && <Assets assets={assets} monthLabel={monthLabel} />}
       {tab === "payables" && <Payables payables={payables} invoices={invoices} today={today} />}
