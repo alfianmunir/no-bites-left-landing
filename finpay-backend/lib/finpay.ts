@@ -11,12 +11,13 @@
  * Every request/response is logged with the Authorization header redacted.
  */
 import crypto from "node:crypto";
-import { env } from "./env";
+import { env, requireFinpayCredentials } from "./env";
 import { logFinpay } from "./log";
 import type { OrderItem, Customer } from "./orders";
 
 function authHeader(): string {
-  const raw = `${env.finpay.merchantId}:${env.finpay.merchantKey}`;
+  const { merchantId, merchantKey } = requireFinpayCredentials();
+  const raw = `${merchantId}:${merchantKey}`;
   return `Basic ${Buffer.from(raw, "utf8").toString("base64")}`;
 }
 
@@ -293,7 +294,7 @@ export function stripSignatureField(rawBody: string): string {
   return text;
 }
 
-export function computeSignature(bodyWithoutSignature: string, merchantKey: string = env.finpay.merchantKey): string {
+export function computeSignature(bodyWithoutSignature: string, merchantKey: string = requireFinpayCredentials().merchantKey): string {
   return crypto.createHmac("sha512", merchantKey).update(bodyWithoutSignature, "utf8").digest("hex");
 }
 

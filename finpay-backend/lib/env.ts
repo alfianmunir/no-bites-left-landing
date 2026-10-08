@@ -19,8 +19,11 @@ function optional(name: string, fallback = ""): string {
 
 export const env = {
   finpay: {
-    merchantId: required("FINPAY_MERCHANT_ID"),
-    merchantKey: required("FINPAY_MERCHANT_KEY"),
+    // Credentials are validated immediately before a Finpay request/signature.
+    // Keeping module import safe lets an unconfigured local checkout build and
+    // serve non-payment screens; payment actions still fail closed.
+    merchantId: optional("FINPAY_MERCHANT_ID"),
+    merchantKey: optional("FINPAY_MERCHANT_KEY"),
     baseUrl: optional("FINPAY_BASE_URL", "https://devo.finnet.co.id").replace(/\/+$/, ""),
   },
   // Public origin of THIS backend, used to build success/fail/callback URLs.
@@ -44,6 +47,14 @@ export const env = {
   // public (NEXT_PUBLIC_TURNSTILE_SITE_KEY, read client-side); secret is here.
   turnstileSecretKey: optional("TURNSTILE_SECRET_KEY"),
 };
+
+/** Finpay must never make a request or verify a callback without both secrets. */
+export function requireFinpayCredentials(): { merchantId: string; merchantKey: string } {
+  return {
+    merchantId: required("FINPAY_MERCHANT_ID"),
+    merchantKey: required("FINPAY_MERCHANT_KEY"),
+  };
+}
 
 /** Whether real Supabase auth is configured (else fall back to dev/mock). */
 export const hasSupabase = Boolean(env.supabase.url && env.supabase.anonKey);

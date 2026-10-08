@@ -2040,6 +2040,25 @@ export interface CashEntryRow {
   balance: number; // running net over the returned rows, oldest→newest
 }
 
+/** A deliberately small accrual reporting pack.  The operational ledgers stay
+ * the source of truth; these rows present them in accountant-friendly account
+ * groups without introducing a second manual bookkeeping workflow. */
+export interface FinancialReportLine {
+  code: string;
+  name: string;
+  amount: number;
+}
+
+export interface AccrualReport {
+  periodPnL: PnL;
+  assets: FinancialReportLine[];
+  liabilities: FinancialReportLine[];
+  equity: FinancialReportLine[];
+  trialBalance: Array<FinancialReportLine & { debit: number; credit: number }>;
+  cashFlow: { operating: number; investing: number; financing: number; net: number };
+  control: { assets: number; liabilitiesAndEquity: number; difference: number; openingBalance: number };
+}
+
 export interface ExpenseCategoryRow {
   id: string;
   code: string;
@@ -2106,6 +2125,126 @@ export async function getCashPosition(): Promise<CashPosition> {
   const accounts = rows.map((r) => ({ account: r.account as string, balance: num(r.balance) }));
   const total = accounts.reduce((s, a) => s + a.balance, 0);
   return { accounts, total };
+}
+
+/**
+ * Basic accrual statements for the Money screen.  The P&L is period-based;
+ * the statement of financial position and trial balance are as of `endISO`.
+ *
+ * Historical opening capital was not captured when Ops went live, so an
+ * explicit "opening / unclassified equity" line is retained as a visible
+ * reconciliation control.  It is never hidden or treated as profit.
+ */
+export async function getAccrualReport(startISO: string, endISO: string): Promise<AccrualReport> {
+  const p = await pool();
+  const [periodPnL, lifePnL, cashRows, inventoryRows, assets, payableRows, receivableRows, cashFlowRows, accumulatedDep] = await Promise.all([
+    getPnL(startISO, endISO),
+    getPnL("2000-01-01", endISO),
+    p.query(
+      `SELECT COALESCE(sum(CASE WHEN direction = 'in' THEN amount ELSE -amount END), 0) AS total
+         FROM ops.cash_entries WHERE occurred_at <= $1::date`,
+      [endISO],
+    ),
+    p.query(
+      `SELECT COALESCE(sum(CASE WHEN item_id IS NOT NULL THEN qty * unit_cost ELSE 0 END), 0) AS raw_inventory,
+              COALESCE(sum(CASE WHEN product_id IS NOT NULL THEN qty * unit_cost ELSE 0 END), 0) AS finished_inventory
+         FROM ops.stock_moves WHERE created_at < ($1::date + 1)`,
+      [endISO],
+    ),
+    listAssets(),
+    p.query(
+      `SELECT COALESCE(sum(pl.qty * pl.unit_cost), 0) AS total
+         FROM ops.purchases pu
+         JOIN ops.purchase_lines pl ON pl.purchase_id = pu.id
+        WHERE pu.received_at <= $1::date
+          AND NOT EXISTS (
+            SELECT 1 FROM ops.cash_entries ce
+             WHERE ce.ref_type = 'purchase' AND ce.ref_id = pu.id AND ce.direction = 'out'
+               AND ce.occurred_at <= $1::date
+          )`,
+      [endISO],
+    ),
+    p.query(
+      `SELECT COALESCE(sum(inv.amount), 0) AS total
+         FROM ops.invoices inv
+        WHERE inv.issued_at <= $1::date AND inv.status <> 'void'
+          AND NOT EXISTS (
+            SELECT 1 FROM ops.cash_entries ce
+             WHERE ce.ref_type = 'invoice' AND ce.ref_id = inv.id AND ce.direction = 'in'
+               AND ce.occurred_at <= $1::date
+          )`,
+      [endISO],
+    ),
+    p.query(
+      `SELECT category,
+              COALESCE(sum(CASE WHEN direction = 'in' THEN amount ELSE -amount END), 0) AS movement
+         FROM ops.cash_entries
+        WHERE occurred_at >= $1::date AND occurred_at < ($2::date + 1)
+        GROUP BY category`,
+      [startISO, endISO],
+    ),
+    p.query(
+      `SELECT COALESCE(sum(e.amount), 0) AS amount
+         FROM ops.expenses e
+         JOIN ops.expense_categories ec ON ec.id = e.category_id
+        WHERE ec.code = 'opex_depreciation' AND e.occurred_at <= $1::date`,
+      [endISO],
+    ),
+  ]);
+
+  const cash = num(cashRows.rows[0]?.total);
+  const receivables = num(receivableRows.rows[0]?.total);
+  const inventory = Math.max(0, num(inventoryRows.rows[0]?.raw_inventory))
+    + Math.max(0, num(inventoryRows.rows[0]?.finished_inventory));
+  const fixedAssetCost = assets
+    .filter((a) => a.status === "owned" && a.purchasedAt != null && a.purchasedAt <= endISO)
+    .reduce((sum, a) => sum + (a.purchaseCost ?? 0), 0);
+  const depreciation = num(accumulatedDep.rows[0]?.amount);
+  const netFixedAssets = Math.max(0, fixedAssetCost - depreciation);
+  const accountsPayable = num(payableRows.rows[0]?.total);
+
+  const assetsLines: FinancialReportLine[] = [
+    { code: "1100", name: "Cash and bank", amount: cash },
+    { code: "1200", name: "Accounts receivable", amount: receivables },
+    { code: "1300", name: "Inventory", amount: inventory },
+    { code: "1500", name: "Property and equipment, net", amount: netFixedAssets },
+  ];
+  const liabilities: FinancialReportLine[] = [
+    { code: "2100", name: "Accounts payable", amount: accountsPayable },
+  ];
+  const currentEarnings = lifePnL.operatingProfit;
+  const totalAssets = assetsLines.reduce((sum, line) => sum + line.amount, 0);
+  const totalLiabilities = liabilities.reduce((sum, line) => sum + line.amount, 0);
+  // This is the historical plug required until opening balances are recorded.
+  // Keeping it visible makes the report reconcile without concealing unknowns.
+  const openingBalance = totalAssets - totalLiabilities - currentEarnings;
+  const equity: FinancialReportLine[] = [
+    { code: "3100", name: "Opening / unclassified equity", amount: openingBalance },
+    { code: "3300", name: "Retained earnings (operating result to date)", amount: currentEarnings },
+  ];
+
+  const trialSource = [...assetsLines, ...liabilities, ...equity];
+  const trialBalance = trialSource.map((line) => {
+    const isAsset = line.code.startsWith("1");
+    const debit = isAsset ? Math.max(line.amount, 0) : Math.max(-line.amount, 0);
+    const credit = isAsset ? Math.max(-line.amount, 0) : Math.max(line.amount, 0);
+    return { ...line, debit, credit };
+  });
+  const movementByCategory = new Map(cashFlowRows.rows.map((r) => [r.category as string, num(r.movement)]));
+  const investing = movementByCategory.get("capex") ?? 0;
+  const net = Array.from(movementByCategory.values()).reduce((sum, amount) => sum + amount, 0);
+  const operating = net - investing;
+  const liabilitiesAndEquity = totalLiabilities + equity.reduce((sum, line) => sum + line.amount, 0);
+
+  return {
+    periodPnL,
+    assets: assetsLines,
+    liabilities,
+    equity,
+    trialBalance,
+    cashFlow: { operating, investing, financing: 0, net },
+    control: { assets: totalAssets, liabilitiesAndEquity, difference: totalAssets - liabilitiesAndEquity, openingBalance },
+  };
 }
 
 /** Cash ledger, filtered + limited, newest first, each row carrying a running
