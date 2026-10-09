@@ -14,6 +14,7 @@ import type {
   InvoiceRow,
   ItemDetailRow,
   ProductRow,
+  AccrualReport,
 } from "@/lib/opsStore";
 
 function rupiah(n: number): string {
@@ -39,11 +40,24 @@ const ACCOUNT_OPTIONS = [
   { value: "cash", label: "Cash" },
 ];
 
-type SubTab = "overview" | "ledger" | "expense" | "budgets" | "assets" | "payables";
+type SubTab = "overview" | "reports" | "ledger" | "expense" | "budgets" | "assets" | "payables";
 
 const BUCKET_COLOR: Record<AgingBucket, string> = {
   paid: "var(--green)", current: "var(--soft)", "1-30": "var(--orange)", "31-60": "var(--orange)", "60+": "var(--red)",
 };
+
+/** Excel opens UTF-8 CSV natively. A BOM preserves Indonesian names and notes
+ * in desktop Excel without adding a heavy spreadsheet dependency to the app. */
+function exportCsv(filename: string, rows: Array<Array<string | number>>) {
+  const esc = (value: string | number) => `"${String(value).replaceAll('"', '""')}"`;
+  const csv = "\uFEFF" + rows.map((row) => row.map(esc).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 // ============================================================ Overview
 function Overview({ position, pnl, monthLabel }: { position: CashPosition; pnl: PnL; monthLabel: string }) {
@@ -108,6 +122,53 @@ function Overview({ position, pnl, monthLabel }: { position: CashPosition; pnl: 
       </div>
     </div>
   );
+}
+
+// ============================================================ Financial reports
+function FinancialReports({ report, monthLabel, month }: { report: AccrualReport; monthLabel: string; month: string }) {
+  const router = useRouter();
+  const pnlRows: Array<[string, number]> = [
+    ["Revenue", report.periodPnL.revenue], ["COGS", -report.periodPnL.cogs], ["Gross profit", report.periodPnL.grossProfit],
+    ["Channel / payment fees", -report.periodPnL.fees], ["Labor", -report.periodPnL.labor], ["Operating expenses", -report.periodPnL.opex],
+    ["Marketing", -report.periodPnL.marketing], ["Samples / KOL", -report.periodPnL.samples], ["R&D", -report.periodPnL.rnd],
+    ["Waste", -report.periodPnL.waste], ["Shrinkage", -report.periodPnL.shrinkage], ["Depreciation", -report.periodPnL.depreciation],
+    ["Operating profit", report.periodPnL.operatingProfit],
+  ];
+  const exportReport = () => {
+    const rows: Array<Array<string | number>> = [["No Bites Left financial report", monthLabel], [], ["Profit and loss", "Amount (IDR)"]];
+    pnlRows.forEach(([name, amount]) => rows.push([name, amount]));
+    rows.push([], ["Statement of financial position", "Amount (IDR)"], ["Assets", ""]);
+    report.assets.forEach((x) => rows.push([`${x.code} ${x.name}`, x.amount]));
+    rows.push(["Liabilities", ""]); report.liabilities.forEach((x) => rows.push([`${x.code} ${x.name}`, x.amount]));
+    rows.push(["Equity", ""]); report.equity.forEach((x) => rows.push([`${x.code} ${x.name}`, x.amount]));
+    rows.push([], ["Trial balance", "Debit (IDR)", "Credit (IDR)"]);
+    report.trialBalance.forEach((x) => rows.push([`${x.code} ${x.name}`, x.debit, x.credit]));
+    rows.push(["Total", report.trialBalance.reduce((s, x) => s + x.debit, 0), report.trialBalance.reduce((s, x) => s + x.credit, 0)]);
+    exportCsv(`no-bites-left-financial-report-${month}.csv`, rows);
+  };
+  const Statement = ({ title, lines, total }: { title: string; lines: typeof report.assets; total: number }) => (
+    <div style={{ ...card, padding: 0, overflow: "hidden" }}>
+      <div style={{ padding: "11px 14px", background: "var(--surface2)", fontSize: 12, fontWeight: 900, color: "var(--choco)" }}>{title}</div>
+      {lines.map((line) => <div key={line.code} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 14px", borderTop: "1px solid var(--line)", fontSize: 13 }}><span>{line.code} · {line.name}</span><strong>{rupiah(line.amount)}</strong></div>)}
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "11px 14px", borderTop: "1.5px solid var(--line)", fontWeight: 900 }}><span>Total {title}</span><span>{rupiah(total)}</span></div>
+    </div>
+  );
+  const assetsTotal = report.assets.reduce((s, x) => s + x.amount, 0);
+  const liabilitiesTotal = report.liabilities.reduce((s, x) => s + x.amount, 0);
+  const equityTotal = report.equity.reduce((s, x) => s + x.amount, 0);
+  return <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: 12, flexWrap: "wrap" }}>
+      <div><label style={labelStyle}>Reporting month</label><input aria-label="Reporting month" type="month" value={month} onChange={(e) => router.replace(`/admin/ops/money?month=${e.target.value}`)} style={{ ...inputStyle, width: "auto" }} /></div>
+      <button onClick={exportReport} style={{ padding: "10px 14px", borderRadius: 10, border: "1.5px solid var(--choco)", background: "#fff", color: "var(--choco)", fontWeight: 900, cursor: "pointer" }}>Export Excel</button>
+    </div>
+    <div style={{ ...card, background: "var(--surface2)", color: "var(--soft)", fontSize: 12.5, lineHeight: 1.5 }}>
+      Accrual basis: sales, COGS, receivables, payables, inventory and depreciation are reported separately from cash. The opening-equity line stays visible until historic opening balances are confirmed.
+    </div>
+    <div><div style={sectionLabel}>PROFIT &amp; LOSS · {monthLabel.toUpperCase()}</div><div style={{ ...card, padding: 0, overflow: "hidden" }}>{pnlRows.map(([name, amount]) => <div key={name} style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", borderBottom: "1px solid var(--line)", fontWeight: name === "Gross profit" || name === "Operating profit" ? 900 : 600 }}><span>{name}</span><span style={{ color: amount < 0 ? "var(--red)" : "var(--ink)" }}>{rupiah(amount)}</span></div>)}</div></div>
+    <div><div style={sectionLabel}>STATEMENT OF FINANCIAL POSITION · AS OF {monthLabel.toUpperCase()}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(270px, 1fr))", gap: 12 }}><Statement title="Assets" lines={report.assets} total={assetsTotal} /><div style={{ display: "flex", flexDirection: "column", gap: 12 }}><Statement title="Liabilities" lines={report.liabilities} total={liabilitiesTotal} /><Statement title="Equity" lines={report.equity} total={equityTotal} /></div></div></div>
+    <div><div style={sectionLabel}>TRIAL BALANCE</div><div style={{ overflowX: "auto", border: "1.5px solid var(--line)", borderRadius: 14, background: "#fff" }}><table style={{ width: "100%", minWidth: 500, borderCollapse: "collapse" }}><thead><tr>{["Account", "Debit", "Credit"].map((h) => <th key={h} style={{ textAlign: h === "Account" ? "left" : "right", padding: "10px 12px", fontSize: 11, color: "var(--soft)", borderBottom: "1px solid var(--line)" }}>{h}</th>)}</tr></thead><tbody>{report.trialBalance.map((line) => <tr key={line.code}><td style={{ padding: "10px 12px", borderBottom: "1px solid var(--line)", fontSize: 13 }}>{line.code} · {line.name}</td><td style={{ padding: "10px 12px", borderBottom: "1px solid var(--line)", textAlign: "right", fontSize: 13 }}>{line.debit ? rupiah(line.debit) : ""}</td><td style={{ padding: "10px 12px", borderBottom: "1px solid var(--line)", textAlign: "right", fontSize: 13 }}>{line.credit ? rupiah(line.credit) : ""}</td></tr>)}</tbody></table></div></div>
+    <div style={{ ...card, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}><div><div style={labelStyle}>Cash flow from operations</div><strong>{rupiah(report.cashFlow.operating)}</strong></div><div><div style={labelStyle}>Investing cash flow</div><strong>{rupiah(report.cashFlow.investing)}</strong></div><div><div style={labelStyle}>Net cash movement</div><strong>{rupiah(report.cashFlow.net)}</strong></div><div><div style={labelStyle}>Balance-sheet check</div><strong style={{ color: Math.abs(report.control.difference) < 1 ? "var(--green)" : "var(--red)" }}>{Math.abs(report.control.difference) < 1 ? "Balanced" : rupiah(report.control.difference)}</strong></div></div>
+  </div>;
 }
 
 // ============================================================ Ledger
@@ -973,6 +1034,7 @@ function Payables({ payables, invoices, today }: { payables: PayablePurchaseRow[
 // ============================================================ Panel
 const TABS: Array<{ key: SubTab; label: string }> = [
   { key: "overview", label: "Overview" },
+  { key: "reports", label: "Financial reports" },
   { key: "ledger", label: "Cash ledger" },
   { key: "expense", label: "Expense" },
   { key: "budgets", label: "Budgets" },
@@ -991,7 +1053,9 @@ export default function MoneyPanel({
   items,
   products,
   pnl,
+  accounting,
   monthLabel,
+  month,
   today,
 }: {
   position: CashPosition;
@@ -1004,7 +1068,9 @@ export default function MoneyPanel({
   items: ItemDetailRow[];
   products: ProductRow[];
   pnl: PnL;
+  accounting: AccrualReport;
   monthLabel: string;
+  month: string;
   today: string;
 }) {
   const [tab, setTab] = useState<SubTab>("overview");
@@ -1031,6 +1097,7 @@ export default function MoneyPanel({
       </div>
 
       {tab === "overview" && <Overview position={position} pnl={pnl} monthLabel={monthLabel} />}
+      {tab === "reports" && <FinancialReports report={accounting} monthLabel={monthLabel} month={month} />}
       {tab === "ledger" && <Ledger entries={entries} monthLabel={monthLabel} />}
       {tab === "expense" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
